@@ -1,15 +1,25 @@
-export interface PlannedTask {
-  id: string;
-  title: string;
-  tool: string;
-  code?: string;
-  arguments?: Record<string, unknown>;
-}
+import { z } from "zod";
+import { isAllowedTool } from "./bridge";
 
-export interface TaskPlan {
-  type: "task_plan";
-  questions?: string[];
-  tasks: PlannedTask[];
+export const PlannedTaskSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1).max(200),
+  tool: z.string().min(1).max(64),
+  code: z.string().max(50_000).optional(),
+  arguments: z.record(z.unknown()).optional(),
+});
+export const TaskPlanSchema = z.object({
+  type: z.literal("task_plan"),
+  questions: z.array(z.string().max(1000)).max(20).optional(),
+  tasks: z.array(PlannedTaskSchema).max(50),
+});
+
+export type PlannedTask = z.infer<typeof PlannedTaskSchema>;
+export type TaskPlan = z.infer<typeof TaskPlanSchema>;
+
+export function isTaskAllowed(tool: string): boolean {
+  // permit non-MCP tools like ping; allowlist only enforced for MCP call_tool dispatches
+  return isAllowedTool(tool) || tool === "ping";
 }
 
 /** Extract a JSON task_plan block from an assistant message. */
@@ -29,9 +39,8 @@ export function extractTaskPlan(content: string): TaskPlan | null {
   for (const c of candidates) {
     try {
       const parsed = JSON.parse(c.trim());
-      if (parsed && parsed.type === "task_plan" && Array.isArray(parsed.tasks)) {
-        return parsed as TaskPlan;
-      }
+      const result = TaskPlanSchema.safeParse(parsed);
+      if (result.success) return result.data;
     } catch {}
   }
   return null;

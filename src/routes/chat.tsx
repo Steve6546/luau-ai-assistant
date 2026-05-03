@@ -12,13 +12,13 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import {
   Plus, Search, Send, Sparkles, MessageSquare, Trash2, LogOut,
-  Menu, ListChecks, Check, X, Loader2, ChevronDown, Play,
+  ListChecks, Check, X, Loader2, ChevronDown, Play, History, RefreshCw,
 } from "lucide-react";
+import { isAllowedTool, MCP_TOOL_ALLOWLIST } from "@/lib/bridge";
 
 export const Route = createFileRoute("/chat")({
   component: () => <RequireAuth><ChatPage /></RequireAuth>,
@@ -214,14 +214,19 @@ function ChatPage() {
   async function runTask(idx: number) {
     const t = tasks[idx];
     if (!t) return;
+    if (bridge.status !== "connected") { toast.error("Bridge not connected. Connect Roblox Studio first."); return; }
     setTasks((p) => p.map((x, i) => i === idx ? { ...x, status: "running" } : x));
     try {
       const requestId = `${Date.now()}-${idx}`;
-      // Use call_tool for MCP-style tools, plain tool for legacy ones
-      const isMcpTool = ["execute_luau", "script_read", "multi_edit", "search_game_tree", "inspect_instance", "start_stop_play", "screen_capture", "list_roblox_studios"].includes(t.tool);
-      const msg = isMcpTool
-        ? { requestId, tool: "call_tool", name: t.tool, arguments: t.code ? { code: t.code, ...t.arguments } : (t.arguments || {}) }
-        : { requestId, tool: t.tool, code: t.code, params: t.arguments };
+      if (!isAllowedTool(t.tool)) {
+        throw new Error(`Tool '${t.tool}' is not in the MCP allowlist (${MCP_TOOL_ALLOWLIST.join(", ")})`);
+      }
+      const msg = {
+        requestId,
+        tool: "call_tool",
+        name: t.tool,
+        arguments: t.code ? { code: t.code, ...t.arguments } : (t.arguments || {}),
+      };
       const res = await bridge.send(msg as any);
       const ok = !res.error && res.status !== "error";
       const output = res.output ?? res.result ?? res.error ?? "";
@@ -234,6 +239,7 @@ function ChatPage() {
       }
     } catch (e: any) {
       setTasks((p) => p.map((x, i) => i === idx ? { ...x, status: "failed", output: e.message } : x));
+      toast.error(e.message || "Task failed");
     }
   }
 
@@ -250,51 +256,49 @@ function ChatPage() {
 
   const activeModel = MODELS.find((m) => m.id === model) || MODELS[0];
 
-  const Sidebar = (
-    <div className="flex flex-col h-full w-full md:w-[260px] bg-sidebar border-r border-sidebar-border">
-      <div className="p-3 flex items-center gap-2 border-b border-sidebar-border">
-        <div className="w-8 h-8 rounded-lg bg-primary/15 flex items-center justify-center">
-          <Sparkles className="w-4 h-4 text-primary" />
-        </div>
-        <div className="flex-1">
-          <div className="text-sm font-semibold">Roblox AI</div>
-          <div className="text-xs text-muted-foreground">Studio Assistant</div>
-        </div>
-      </div>
-      <div className="p-2 space-y-2">
-        <Button size="sm" className="w-full justify-start gap-2" onClick={newConversation}>
-          <Plus className="w-4 h-4" /> New chat
+  const HistoryPopover = (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="sm" className="gap-2 h-8 px-2 text-xs">
+          <History className="w-3.5 h-3.5" />
+          <span className="hidden sm:inline">History</span>
+          <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">{convs.length}</Badge>
         </Button>
-        <div className="relative">
-          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input className="pl-8 h-8 bg-background/50" placeholder="Search" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80 p-0">
+        <div className="p-2 space-y-2 border-b border-border">
+          <Button size="sm" className="w-full justify-start gap-2 h-8" onClick={newConversation}>
+            <Plus className="w-4 h-4" /> New chat
+          </Button>
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input className="pl-8 h-8 bg-background/50" placeholder="Search conversations" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
         </div>
-      </div>
-      <ScrollArea className="flex-1 px-2">
-        <div className="space-y-0.5 pb-2">
-          {filteredConvs.map((c) => (
-            <div key={c.id} className={`group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-sm ${activeId === c.id ? "bg-sidebar-accent text-foreground" : "text-muted-foreground hover:bg-sidebar-accent/60"}`}
-              onClick={() => setActiveId(c.id)}>
-              <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate flex-1">{c.title}</span>
-              <button onClick={(e) => { e.stopPropagation(); deleteConversation(c.id); }}
-                className="opacity-0 group-hover:opacity-100 hover:text-destructive">
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ))}
-          {!filteredConvs.length && <div className="text-xs text-muted-foreground px-2 py-4 text-center">No conversations</div>}
+        <ScrollArea className="max-h-80">
+          <div className="p-1">
+            {filteredConvs.map((c) => (
+              <div key={c.id} className={`group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-sm ${activeId === c.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60"}`}
+                onClick={() => setActiveId(c.id)}>
+                <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate flex-1">{c.title}</span>
+                <button onClick={(e) => { e.stopPropagation(); deleteConversation(c.id); }}
+                  className="opacity-0 group-hover:opacity-100 hover:text-destructive">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+            {!filteredConvs.length && <div className="text-xs text-muted-foreground px-2 py-6 text-center">No conversations</div>}
+          </div>
+        </ScrollArea>
+        <div className="p-2 border-t border-border flex items-center gap-2">
+          <div className="flex-1 text-xs text-muted-foreground truncate">{user?.email}</div>
+          <Button variant="ghost" size="sm" className="h-7 gap-1 text-muted-foreground" onClick={() => signOut()}>
+            <LogOut className="w-3.5 h-3.5" /> Sign out
+          </Button>
         </div>
-      </ScrollArea>
-      <div className="p-2 border-t border-sidebar-border space-y-1">
-        <div className="flex items-center gap-2 px-2 py-1.5 text-xs text-muted-foreground truncate">
-          {user?.email}
-        </div>
-        <Button variant="ghost" size="sm" className="w-full justify-start gap-2 text-muted-foreground" onClick={() => signOut()}>
-          <LogOut className="w-3.5 h-3.5" /> Sign out
-        </Button>
-      </div>
-    </div>
+      </PopoverContent>
+    </Popover>
   );
 
   const TaskPanel = (
@@ -353,25 +357,21 @@ function ChatPage() {
 
   return (
     <div className="h-screen flex bg-background text-foreground overflow-hidden">
-      <div className="hidden md:flex">{Sidebar}</div>
-
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-12 border-b border-border flex items-center px-3 gap-2">
-          <Sheet>
-            <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="md:hidden h-8 w-8"><Menu className="w-4 h-4" /></Button>
-            </SheetTrigger>
-            <SheetContent side="left" className="p-0 w-[280px]">{Sidebar}</SheetContent>
-          </Sheet>
-          <BridgeIndicator status={bridge.status} latency={bridge.latency} />
+          <div className="flex items-center gap-1.5">
+            <div className="w-7 h-7 rounded-md bg-primary/15 flex items-center justify-center">
+              <Sparkles className="w-3.5 h-3.5 text-primary" />
+            </div>
+            <span className="text-sm font-semibold hidden sm:inline">Roblox AI</span>
+          </div>
+          {HistoryPopover}
+          <BridgeIndicator status={bridge.status} latency={bridge.latency} onReconnect={bridge.reconnect} />
           <div className="flex-1" />
           <TopNav />
-          <Sheet>
-            <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="md:hidden h-8 w-8"><ListChecks className="w-4 h-4" /></Button>
-            </SheetTrigger>
-            <SheetContent side="right" className="p-0 w-[340px]">{TaskPanel}</SheetContent>
-          </Sheet>
+          <Button variant="ghost" size="sm" className="lg:hidden gap-1 h-8" onClick={() => setTaskPanelOpen((v) => !v)}>
+            <ListChecks className="w-4 h-4" />
+          </Button>
         </header>
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
@@ -448,6 +448,7 @@ function ChatPage() {
       </div>
 
       <div className="hidden lg:flex">{TaskPanel}</div>
+      {taskPanelOpen && <div className="lg:hidden fixed inset-y-0 right-0 z-40 w-[340px] shadow-2xl">{TaskPanel}</div>}
     </div>
   );
 }
@@ -463,18 +464,20 @@ function StatusBadge({ status }: { status: RuntimeTask["status"] }) {
   return <Badge className={`gap-1 ${m.color} border-0 font-normal text-[10px] px-1.5 py-0.5`}>{m.icon}{m.label}</Badge>;
 }
 
-function BridgeIndicator({ status, latency }: { status: BridgeStatus; latency: number | null }) {
+function BridgeIndicator({ status, latency, onReconnect }: { status: BridgeStatus; latency: number | null; onReconnect: () => void }) {
   const map = {
     connected: { dot: "bg-emerald-500", label: "Connected" },
-    "bridge-only": { dot: "bg-amber-500", label: "Bridge Only" },
-    offline: { dot: "bg-red-500", label: "Offline" },
+    reconnecting: { dot: "bg-amber-500 animate-pulse", label: "Reconnecting" },
+    disconnected: { dot: "bg-red-500", label: "Disconnected" },
   } as const;
   const m = map[status];
   return (
-    <div className="flex items-center gap-2 text-xs text-muted-foreground px-2 py-1 rounded-md bg-card/60 border border-border">
+    <button onClick={onReconnect} title="Click to reconnect"
+      className="flex items-center gap-2 text-xs text-muted-foreground px-2 py-1 rounded-md bg-card/60 border border-border hover:border-primary/40 transition-colors">
       <span className={`w-2 h-2 rounded-full ${m.dot}`} />
-      {m.label}{latency != null && status === "connected" ? ` · ${latency}ms` : ""}
-    </div>
+      <span>{m.label}{latency != null && status === "connected" ? ` · ${latency}ms` : ""}</span>
+      {status !== "connected" && <RefreshCw className="w-3 h-3" />}
+    </button>
   );
 }
 

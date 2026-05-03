@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Plus, Folder, Trash2 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/projects")({
@@ -86,11 +87,11 @@ function ProjectsPage() {
                   <div className="w-10 h-10 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
                     <Folder className="w-5 h-5 text-primary" />
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{p.name}</div>
+                  <Link to="/projects/$id" params={{ id: p.id }} className="flex-1 min-w-0">
+                    <div className="font-medium truncate hover:text-primary">{p.name}</div>
                     <div className="text-xs text-muted-foreground line-clamp-2 mt-0.5">{p.description || "No description"}</div>
                     <div className="text-xs text-muted-foreground mt-2">{counts[p.id] || 0} conversations</div>
-                  </div>
+                  </Link>
                   <button onClick={() => remove(p.id)} className="text-muted-foreground hover:text-destructive">
                     <Trash2 className="w-4 h-4" />
                   </button>

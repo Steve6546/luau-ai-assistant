@@ -1,8 +1,10 @@
 /**
  * Roblox Studio MCP bridge over WebSocket.
- * Default to remote Cloudflare tunnel; configurable via localStorage.
+ * Singleton connection with auto-reconnect (exponential backoff),
+ * 5s heartbeat ping, latency tracking, request timeouts, and a
+ * tool allowlist enforced before any send().
  */
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 export const DEFAULT_BRIDGE_URL =
   "wss://martial-trembl-coupon-demonstrated.trycloudflare.com?token=test-token-roblox";
@@ -14,14 +16,26 @@ export function getBridgeUrl(): string {
 
 export function setBridgeUrl(url: string) {
   localStorage.setItem("bridge_url", url);
+  bridge.reconnect();
 }
 
-export type BridgeStatus = "connected" | "bridge-only" | "offline";
+export type BridgeStatus = "connected" | "reconnecting" | "disconnected";
 
-interface PendingResolver {
-  resolve: (v: any) => void;
-  reject: (e: any) => void;
-  startedAt: number;
+/** Whitelisted MCP tool names that may be invoked via call_tool. */
+export const MCP_TOOL_ALLOWLIST = [
+  "execute_luau",
+  "script_read",
+  "multi_edit",
+  "search_game_tree",
+  "inspect_instance",
+  "start_stop_play",
+  "screen_capture",
+  "list_roblox_studios",
+] as const;
+export type McpTool = (typeof MCP_TOOL_ALLOWLIST)[number];
+
+export function isAllowedTool(name: string): name is McpTool {
+  return (MCP_TOOL_ALLOWLIST as readonly string[]).includes(name);
 }
 
 export interface BridgeMessage {
@@ -39,85 +53,182 @@ export interface BridgeResponse {
   output?: unknown;
   error?: string;
   result?: unknown;
+  mcp?: string;
+  studio?: string;
 }
 
-export function useBridge() {
-  const [status, setStatus] = useState<BridgeStatus>("offline");
-  const [latency, setLatency] = useState<number | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const pendingRef = useRef<Map<string, PendingResolver>>(new Map());
+interface State {
+  status: BridgeStatus;
+  latency: number | null;
+}
 
-  const connect = useCallback(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const url = getBridgeUrl();
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
-      ws.onopen = () => {
-        setStatus("bridge-only");
-        // ping to determine if Studio is connected
-        const id = `ping-${Date.now()}`;
-        const start = performance.now();
-        const handler = (ev: MessageEvent) => {
-          try {
-            const data = JSON.parse(ev.data);
-            if (data.requestId === id) {
-              setLatency(Math.round(performance.now() - start));
-              setStatus(data.error ? "bridge-only" : "connected");
-              ws.removeEventListener("message", handler);
-            }
-          } catch {}
-        };
-        ws.addEventListener("message", handler);
-        ws.send(JSON.stringify({ requestId: id, tool: "ping" }));
-      };
-      ws.onmessage = (ev) => {
-        try {
-          const data: BridgeResponse = JSON.parse(ev.data);
-          const p = pendingRef.current.get(data.requestId);
-          if (p) {
-            pendingRef.current.delete(data.requestId);
-            p.resolve(data);
-          }
-        } catch (e) {
-          console.error("bridge parse error", e);
-        }
-      };
-      ws.onclose = () => { setStatus("offline"); };
-      ws.onerror = () => { setStatus("offline"); };
-    } catch (e) {
-      console.error("bridge connect failed", e);
-      setStatus("offline");
+interface Pending {
+  resolve: (v: BridgeResponse & { durationMs: number }) => void;
+  reject: (e: Error) => void;
+  startedAt: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+class BridgeClient {
+  private ws: WebSocket | null = null;
+  private listeners = new Set<() => void>();
+  private state: State = { status: "disconnected", latency: null };
+  private pending = new Map<string, Pending>();
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
+  private lastPongAt = 0;
+  private started = false;
+
+  start() {
+    if (this.started || typeof window === "undefined") return;
+    this.started = true;
+    this.connect();
+  }
+
+  reconnect() {
+    this.cleanup();
+    this.reconnectAttempt = 0;
+    this.connect();
+  }
+
+  subscribe = (cb: () => void) => {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  };
+
+  getSnapshot = () => this.state;
+
+  private setState(next: Partial<State>) {
+    this.state = { ...this.state, ...next };
+    this.listeners.forEach((l) => l());
+  }
+
+  private cleanup() {
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+    if (this.ws) {
+      try { this.ws.onopen = this.ws.onmessage = this.ws.onclose = this.ws.onerror = null; this.ws.close(); } catch {}
+      this.ws = null;
     }
-  }, []);
+  }
 
-  useEffect(() => {
-    connect();
-    return () => { wsRef.current?.close(); };
-  }, [connect]);
+  private scheduleReconnect() {
+    this.setState({ status: "reconnecting" });
+    const delay = Math.min(30000, 500 * Math.pow(2, this.reconnectAttempt++));
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
+  }
 
-  const send = useCallback((msg: BridgeMessage, timeoutMs = 30000): Promise<BridgeResponse & { durationMs: number }> => {
+  private connect() {
+    this.cleanup();
+    this.setState({ status: "reconnecting" });
+    let ws: WebSocket;
+    try { ws = new WebSocket(getBridgeUrl()); }
+    catch { this.setState({ status: "disconnected" }); this.scheduleReconnect(); return; }
+    this.ws = ws;
+
+    ws.onopen = () => {
+      this.reconnectAttempt = 0;
+      this.lastPongAt = Date.now();
+      this.ping();
+      this.heartbeat = setInterval(() => {
+        // missed pong watchdog
+        if (Date.now() - this.lastPongAt > 12000) {
+          this.setState({ status: "reconnecting", latency: null });
+          ws.close();
+          return;
+        }
+        this.ping();
+      }, 5000);
+    };
+    ws.onmessage = (ev) => {
+      let data: BridgeResponse;
+      try { data = JSON.parse(ev.data); } catch { return; }
+      const p = this.pending.get(data.requestId);
+      if (p) {
+        clearTimeout(p.timer);
+        this.pending.delete(data.requestId);
+        p.resolve({ ...data, durationMs: Math.round(performance.now() - p.startedAt) });
+      }
+      if (data.requestId === "ping") {
+        this.lastPongAt = Date.now();
+        const studioOk = !data.studio || data.studio === "connected";
+        const mcpOk = !data.mcp || data.mcp === "ready";
+        this.setState({ status: studioOk && mcpOk ? "connected" : "reconnecting" });
+      }
+    };
+    ws.onclose = () => { this.setState({ status: "disconnected", latency: null }); this.failPending("connection closed"); this.scheduleReconnect(); };
+    ws.onerror = () => { this.setState({ status: "disconnected" }); };
+  }
+
+  private failPending(reason: string) {
+    for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(new Error(reason)); }
+    this.pending.clear();
+  }
+
+  private pingStart = 0;
+  private ping() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.pingStart = performance.now();
+    try {
+      this.ws.send(JSON.stringify({ requestId: "ping", tool: "ping" }));
+      // latency updated on response
+      const start = this.pingStart;
+      const onMsg = (ev: MessageEvent) => {
+        try {
+          const d = JSON.parse(ev.data);
+          if (d.requestId === "ping") {
+            this.setState({ latency: Math.round(performance.now() - start) });
+            this.ws?.removeEventListener("message", onMsg);
+          }
+        } catch {}
+      };
+      this.ws.addEventListener("message", onMsg);
+    } catch {}
+  }
+
+  send(msg: BridgeMessage, timeoutMs = 30000): Promise<BridgeResponse & { durationMs: number }> {
     return new Promise((resolve, reject) => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
+      // Enforce allowlist for call_tool
+      if (msg.tool === "call_tool" && (!msg.name || !isAllowedTool(msg.name))) {
+        reject(new Error(`Tool '${msg.name}' is not in the MCP allowlist`));
+        return;
+      }
+      if (this.state.status !== "connected") {
         reject(new Error("Bridge not connected"));
         return;
       }
+      const ws = this.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        reject(new Error("Bridge socket not open"));
+        return;
+      }
       const startedAt = performance.now();
-      pendingRef.current.set(msg.requestId, {
-        resolve: (v: BridgeResponse) => resolve({ ...v, durationMs: Math.round(performance.now() - startedAt) }),
-        reject,
-        startedAt,
-      });
-      ws.send(JSON.stringify(msg));
-      setTimeout(() => {
-        if (pendingRef.current.has(msg.requestId)) {
-          pendingRef.current.delete(msg.requestId);
+      const timer = setTimeout(() => {
+        if (this.pending.has(msg.requestId)) {
+          this.pending.delete(msg.requestId);
           reject(new Error("Bridge request timed out"));
         }
       }, timeoutMs);
+      this.pending.set(msg.requestId, { resolve, reject, startedAt, timer });
+      try { ws.send(JSON.stringify(msg)); }
+      catch (e) { clearTimeout(timer); this.pending.delete(msg.requestId); reject(e as Error); }
     });
-  }, []);
-
-  return { status, latency, send, reconnect: connect };
+  }
 }
+
+export const bridge = new BridgeClient();
+if (typeof window !== "undefined") bridge.start();
+
+export function useBridge() {
+  const state = useSyncExternalStore(bridge.subscribe, bridge.getSnapshot, bridge.getSnapshot);
+  return {
+    status: state.status,
+    latency: state.latency,
+    send: bridge.send.bind(bridge),
+    reconnect: () => bridge.reconnect(),
+  };
+}
+
+// keep useEffect/useState used (avoid unused import warnings if tree-shaken)
+void useEffect; void useState;
