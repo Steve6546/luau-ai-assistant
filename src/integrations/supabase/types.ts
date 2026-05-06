@@ -103,36 +103,96 @@ export type Database = {
         }
         Relationships: []
       }
+      snapshots: {
+        Row: {
+          conversation_id: string
+          created_at: string
+          id: string
+          label: string | null
+          snapshot_data: Json
+          task_id: string | null
+        }
+        Insert: {
+          conversation_id: string
+          created_at?: string
+          id?: string
+          label?: string | null
+          snapshot_data: Json
+          task_id?: string | null
+        }
+        Update: {
+          conversation_id?: string
+          created_at?: string
+          id?: string
+          label?: string | null
+          snapshot_data?: Json
+          task_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "snapshots_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "snapshots_task_id_fkey"
+            columns: ["task_id"]
+            isOneToOne: false
+            referencedRelation: "tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tasks: {
         Row: {
+          approved: boolean | null
           code: string | null
           conversation_id: string
           created_at: string
+          diff_new: string | null
+          diff_original: string | null
           duration_ms: number | null
           id: string
           output: string | null
+          retry_count: number
+          script_path: string | null
+          snapshot_id: string | null
           status: string
           title: string
           tool: string
         }
         Insert: {
+          approved?: boolean | null
           code?: string | null
           conversation_id: string
           created_at?: string
+          diff_new?: string | null
+          diff_original?: string | null
           duration_ms?: number | null
           id?: string
           output?: string | null
+          retry_count?: number
+          script_path?: string | null
+          snapshot_id?: string | null
           status?: string
           title: string
           tool: string
         }
         Update: {
+          approved?: boolean | null
           code?: string | null
           conversation_id?: string
           created_at?: string
+          diff_new?: string | null
+          diff_original?: string | null
           duration_ms?: number | null
           id?: string
           output?: string | null
+          retry_count?: number
+          script_path?: string | null
+          snapshot_id?: string | null
           status?: string
           title?: string
           tool?: string
@@ -143,6 +203,13 @@ export type Database = {
             columns: ["conversation_id"]
             isOneToOne: false
             referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tasks_snapshot_id_fkey"
+            columns: ["snapshot_id"]
+            isOneToOne: false
+            referencedRelation: "snapshots"
             referencedColumns: ["id"]
           },
         ]
