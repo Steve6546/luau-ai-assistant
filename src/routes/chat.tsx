@@ -6,7 +6,9 @@ import { RequireAuth, TopNav } from "@/components/AppShell";
 import { MarkdownMessage } from "@/components/MarkdownMessage";
 import { MODELS, getStoredModel, setStoredModel, type ModelId } from "@/lib/models";
 import { useBridge, type BridgeStatus } from "@/lib/bridge";
-import { extractTaskPlan, type PlannedTask } from "@/lib/parse-tasks";
+import { extractTaskPlan } from "@/lib/parse-tasks";
+import { useTaskExecutor, type RuntimeTask } from "@/lib/use-task-executor";
+import { ScriptDiffViewer } from "@/components/ScriptDiffViewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -16,9 +18,8 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import {
   Plus, Search, Send, Sparkles, MessageSquare, Trash2, LogOut,
-  ListChecks, Check, X, Loader2, ChevronDown, Play, History, RefreshCw,
+  ListChecks, Check, X, Loader2, ChevronDown, Play, History, RefreshCw, Undo2,
 } from "lucide-react";
-import { isAllowedTool, MCP_TOOL_ALLOWLIST } from "@/lib/bridge";
 
 export const Route = createFileRoute("/chat")({
   component: () => <RequireAuth><ChatPage /></RequireAuth>,
@@ -26,11 +27,6 @@ export const Route = createFileRoute("/chat")({
 
 interface Conv { id: string; title: string; model: string; updated_at: string; }
 interface Msg { id: string; role: "user" | "assistant" | "system"; content: string; reasoning?: string | null; created_at: string; }
-interface RuntimeTask extends PlannedTask {
-  status: "pending" | "running" | "done" | "failed";
-  output?: string;
-  durationMs?: number;
-}
 
 function ChatPage() {
   const { user, signOut } = useAuth();
@@ -42,10 +38,11 @@ function ChatPage() {
   const [streaming, setStreaming] = useState(false);
   const [search, setSearch] = useState("");
   const [taskPanelOpen, setTaskPanelOpen] = useState(true);
-  const [tasks, setTasks] = useState<RuntimeTask[]>([]);
   const [questions, setQuestions] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bridge = useBridge();
+  const executor = useTaskExecutor(activeId);
+  const { tasks, setAll: setTasks, prepare: prepareTask, execute: executeTask, cancel: cancelTask, undo: undoTask, runAll: runAllTasks } = executor;
 
   useEffect(() => { setStoredModel(model); }, [model]);
 
@@ -79,6 +76,7 @@ function ChatPage() {
         }
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
   useEffect(() => {
@@ -211,45 +209,6 @@ function ChatPage() {
     }
   }
 
-  async function runTask(idx: number) {
-    const t = tasks[idx];
-    if (!t) return;
-    if (bridge.status !== "connected") { toast.error("Bridge not connected. Connect Roblox Studio first."); return; }
-    setTasks((p) => p.map((x, i) => i === idx ? { ...x, status: "running" } : x));
-    try {
-      const requestId = `${Date.now()}-${idx}`;
-      if (!isAllowedTool(t.tool)) {
-        throw new Error(`Tool '${t.tool}' is not in the MCP allowlist (${MCP_TOOL_ALLOWLIST.join(", ")})`);
-      }
-      const msg = {
-        requestId,
-        tool: "call_tool",
-        name: t.tool,
-        arguments: t.code ? { code: t.code, ...t.arguments } : (t.arguments || {}),
-      };
-      const res = await bridge.send(msg as any);
-      const ok = !res.error && res.status !== "error";
-      const output = res.output ?? res.result ?? res.error ?? "";
-      setTasks((p) => p.map((x, i) => i === idx ? { ...x, status: ok ? "done" : "failed", output: typeof output === "string" ? output : JSON.stringify(output, null, 2), durationMs: res.durationMs } : x));
-      if (activeId) {
-        await supabase.from("tasks").insert({
-          conversation_id: activeId, title: t.title, tool: t.tool, code: t.code,
-          status: ok ? "done" : "failed", output: typeof output === "string" ? output : JSON.stringify(output), duration_ms: res.durationMs,
-        });
-      }
-    } catch (e: any) {
-      setTasks((p) => p.map((x, i) => i === idx ? { ...x, status: "failed", output: e.message } : x));
-      toast.error(e.message || "Task failed");
-    }
-  }
-
-  async function runAllTasks() {
-    for (let i = 0; i < tasks.length; i++) {
-      // eslint-disable-next-line no-await-in-loop
-      await runTask(i);
-    }
-  }
-
   const filteredConvs = useMemo(() =>
     convs.filter((c) => c.title.toLowerCase().includes(search.toLowerCase())),
     [convs, search]);
@@ -333,12 +292,32 @@ function ChatPage() {
                 <StatusBadge status={t.status} />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{t.title}</div>
-                  <div className="text-[11px] text-muted-foreground">{t.tool}{t.durationMs ? ` · ${t.durationMs}ms` : ""}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {t.tool}
+                    {t.durationMs ? ` · ${t.durationMs}ms` : ""}
+                    {t.retryCount && t.retryCount > 0 ? ` · 🔧 ${t.retryCount} fix${t.retryCount > 1 ? "es" : ""}` : ""}
+                  </div>
                 </div>
-                <Button size="sm" variant="ghost" className="h-6 px-2" onClick={() => runTask(i)} disabled={t.status === "running"}>
-                  {t.status === "running" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                {t.snapshotId && t.status === "done" && (
+                  <Button size="sm" variant="ghost" className="h-6 px-2" title="Undo" onClick={() => undoTask(i)}>
+                    <Undo2 className="w-3 h-3" />
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" className="h-6 px-2" onClick={() => prepareTask(i)} disabled={t.status === "running" || t.status === "testing" || t.status === "fixing" || t.status === "awaiting_approval"}>
+                  {(t.status === "running" || t.status === "testing" || t.status === "fixing") ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
                 </Button>
               </div>
+              {t.status === "awaiting_approval" && t.scriptPath && t.diffNew !== undefined && (
+                <div className="mt-2">
+                  <ScriptDiffViewer
+                    scriptPath={t.scriptPath}
+                    originalContent={t.diffOriginal ?? ""}
+                    newContent={t.diffNew}
+                    onApprove={() => executeTask(i)}
+                    onCancel={() => cancelTask(i)}
+                  />
+                </div>
+              )}
               {t.code && (
                 <pre className="text-[11px] bg-[#1e1e1e] rounded p-2 max-h-32 overflow-auto font-mono">{t.code}</pre>
               )}
