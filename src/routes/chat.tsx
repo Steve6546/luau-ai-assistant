@@ -433,7 +433,7 @@ function ChatPage() {
 }
 
 function StatusBadge({ status }: { status: RuntimeTask["status"] }) {
-  const map: Record<RuntimeTask["status"], { color: string; label: string; icon: React.ReactNode }> = {
+  const map: Record<RuntimeTask["status"], { color: string; label: string; icon: ReactNode }> = {
     pending: { color: "bg-muted text-muted-foreground", label: "Pending", icon: null },
     awaiting_approval: { color: "bg-amber-500/20 text-amber-400", label: "Review", icon: null },
     running: { color: "bg-primary/20 text-primary", label: "Running", icon: <span className="w-1.5 h-1.5 rounded-full bg-primary pulse-dot inline-block" /> },
