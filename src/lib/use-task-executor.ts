@@ -218,13 +218,16 @@ export function useTaskExecutor(conversationId: string | null) {
           const err = await watchConsole();
           if (err) {
             if (attempt >= MAX_FIX_ATTEMPTS) {
-              throw new Error(`Console error after ${attempt} fix attempts:\n${err}`);
+              throw new Error(`❌ Failed after ${attempt}/${MAX_FIX_ATTEMPTS} fix attempts.\n\nLast error:\n${err}`);
             }
             attempt++;
-            update(idx, { status: "fixing", output: `⚠️ Error detected, auto-fixing (attempt ${attempt}/${MAX_FIX_ATTEMPTS})…\n${err}` });
+            update(idx, {
+              status: "fixing",
+              output: `⚠️ Console error detected.\nFix attempt ${attempt} of ${MAX_FIX_ATTEMPTS}…\n\n${err}`,
+            });
             const codeToFix = currentTask.code || (currentTask.arguments as any)?.content || "";
             const fixed = await requestFix(err, codeToFix);
-            if (!fixed) throw new Error(`AI could not produce a fix for:\n${err}`);
+            if (!fixed) throw new Error(`❌ AI could not generate a fix on attempt ${attempt}/${MAX_FIX_ATTEMPTS}.\n\n${err}`);
             currentTask = {
               ...currentTask,
               tool: "multi_edit",
@@ -239,7 +242,7 @@ export function useTaskExecutor(conversationId: string | null) {
 
         // Success
         const finalOutput = attempt > 0
-          ? `🔧 Fixed after ${attempt} attempt${attempt > 1 ? "s" : ""}\n\n${outStr}`
+          ? `✅ Fixed automatically on attempt ${attempt}/${MAX_FIX_ATTEMPTS}.\n\n${outStr}`
           : `✅ ${outStr || "Done"}`;
         update(idx, {
           status: "done",
