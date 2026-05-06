@@ -290,14 +290,18 @@ export function useTaskExecutor(conversationId: string | null) {
   }, [tasks, conversationId, sendTool, takeSnapshot, watchConsole, requestFix, update]);
 
   const cancel = useCallback(async (idx: number) => {
+    const t = tasks[idx];
     update(idx, { status: "cancelled", output: "Cancelled by user" });
     if (conversationId) {
       await supabase.from("tasks").insert({
         conversation_id: conversationId,
-        title: tasks[idx]?.title ?? "Cancelled task",
-        tool: tasks[idx]?.tool ?? "unknown",
+        title: t?.title ?? "Cancelled task",
+        tool: t?.tool ?? "unknown",
         status: "cancelled",
         approved: false,
+        script_path: t?.scriptPath ?? null,
+        diff_original: t?.diffOriginal ?? null,
+        diff_new: t?.diffNew ?? null,
       });
     }
   }, [tasks, conversationId, update]);
@@ -307,7 +311,7 @@ export function useTaskExecutor(conversationId: string | null) {
     if (!t?.snapshotId) { toast.error("No snapshot available for this task"); return; }
     const { data: snap } = await supabase.from("snapshots").select("snapshot_data").eq("id", t.snapshotId).maybeSingle();
     if (!snap) { toast.error("Snapshot not found"); return; }
-    update(idx, { status: "running", output: "↩ Restoring…" });
+    update(idx, { status: "running", output: "↩ Restoring previous Studio state…" });
     try {
       const restoreCode = `local snapshot = game:GetService("HttpService"):JSONDecode([==[${JSON.stringify(snap.snapshot_data)}]==])\n-- restore_luau_from_snapshot expected on bridge side\nreturn snapshot`;
       await bridge.send({
@@ -316,18 +320,78 @@ export function useTaskExecutor(conversationId: string | null) {
         name: "run_code",
         arguments: { code: restoreCode, snapshot: snap.snapshot_data },
       }, 30000);
-      update(idx, { status: "done", output: "✅ Restored to previous state" });
+      update(idx, { status: "done", output: "✅ Restored to previous state from snapshot" });
+      toast.success("Studio state restored");
     } catch (e: any) {
-      update(idx, { status: "failed", output: `Restore failed: ${e.message}` });
+      update(idx, { status: "failed", output: `↩ Restore failed: ${e.message}` });
+      toast.error("Restore failed");
     }
   }, [tasks, update]);
 
   const runAll = useCallback(async () => {
+    // If tasks are all simple write/exec actions, group into one batch_execute
+    if (
+      tasks.length > 1 &&
+      tasks.every((t) => ["execute_luau", "run_code", "set_property", "insert_instance"].includes(t.tool))
+    ) {
+      if (bridge.getSnapshot().status !== "connected") {
+        toast.error("Bridge not connected.");
+        return;
+      }
+      // mark all as running
+      tasks.forEach((_, i) => update(i, { status: "running", output: "🧩 Batched…" }));
+      const sid = await takeSnapshot(`Before batch (${tasks.length})`);
+      try {
+        const res = await bridge.send({
+          requestId: uuid(),
+          tool: "call_tool",
+          name: "batch_execute",
+          arguments: {
+            steps: tasks.map((t) => ({
+              tool: t.tool,
+              code: t.code,
+              arguments: t.arguments || {},
+            })),
+          },
+        }, 60000);
+        const out: any = res.output ?? res.result ?? {};
+        const results: any[] = Array.isArray(out.results) ? out.results : [];
+        for (let i = 0; i < tasks.length; i++) {
+          const r = results[i] ?? {};
+          const ok = !r.error && r.status !== "error";
+          const text = typeof r.output === "string" ? r.output : JSON.stringify(r.output ?? r.error ?? "Done", null, 2);
+          update(i, {
+            status: ok ? "done" : "failed",
+            output: ok ? `✅ ${text}` : `❌ ${text}`,
+            snapshotId: sid ?? undefined,
+            durationMs: r.durationMs ?? 0,
+          });
+          if (conversationId) {
+            await supabase.from("tasks").insert({
+              conversation_id: conversationId,
+              title: tasks[i].title,
+              tool: tasks[i].tool,
+              code: tasks[i].code,
+              status: ok ? "done" : "failed",
+              output: text,
+              snapshot_id: sid ?? null,
+              duration_ms: r.durationMs ?? 0,
+            });
+          }
+        }
+        toast.success(`Batch complete (${results.filter((r) => !r.error).length}/${tasks.length})`);
+        return;
+      } catch (e: any) {
+        toast.error(`Batch failed: ${e.message}`);
+        tasks.forEach((_, i) => update(i, { status: "failed", output: e.message }));
+        return;
+      }
+    }
     for (let i = 0; i < tasks.length; i++) {
       // eslint-disable-next-line no-await-in-loop
       await prepare(i);
     }
-  }, [tasks, prepare]);
+  }, [tasks, prepare, takeSnapshot, conversationId, update]);
 
   return { tasks, setAll, prepare, execute, cancel, undo, runAll, update };
 }
