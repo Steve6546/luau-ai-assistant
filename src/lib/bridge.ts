@@ -36,6 +36,13 @@ export const MCP_TOOL_ALLOWLIST = [
   "watch_console",
   "run_code",
   "set_property",
+  "get_hierarchy",
+  "get_scripts",
+  "insert_instance",
+  "delete_instance",
+  "rename_instance",
+  "move_instance",
+  "studio_log",
 ] as const;
 export type McpTool = (typeof MCP_TOOL_ALLOWLIST)[number];
 

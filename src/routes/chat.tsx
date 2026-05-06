@@ -264,9 +264,10 @@ function ChatPage() {
     <div className="flex flex-col h-full w-full md:w-[320px] bg-card border-l border-border">
       <div className="p-3 flex items-center gap-2 border-b border-border">
         <ListChecks className="w-4 h-4 text-primary" />
-        <div className="text-sm font-semibold flex-1">Tasks</div>
+        <div className="text-sm font-semibold flex-1">Tasks {tasks.length > 0 && <span className="text-muted-foreground font-normal">· {tasks.length}</span>}</div>
         {tasks.length > 0 && (
-          <Button size="sm" variant="outline" onClick={runAllTasks} disabled={tasks.some((t) => t.status === "running")}>
+          <Button size="sm" variant="outline" onClick={runAllTasks} disabled={tasks.some((t) => t.status === "running" || t.status === "testing" || t.status === "fixing")}
+            title="Runs as one batch when possible (batch_execute)">
             <Play className="w-3 h-3 mr-1" /> Run all
           </Button>
         )}

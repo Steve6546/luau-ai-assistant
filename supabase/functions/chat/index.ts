@@ -19,7 +19,9 @@ When the user asks for an action inside Roblox Studio, respond with a brief expl
   ]
 }
 
-Supported tools: execute_luau, script_read, multi_edit, search_game_tree, inspect_instance, start_stop_play, screen_capture, list_roblox_studios, ping, run_code, get_hierarchy, get_scripts, set_property, insert_instance.
+Supported MCP tools (21): execute_luau, script_read, multi_edit, search_game_tree, inspect_instance, start_stop_play, screen_capture, list_roblox_studios, snapshot, batch_execute, watch_console, run_code, set_property, get_hierarchy, get_scripts, insert_instance, delete_instance, rename_instance, move_instance, studio_log, ping.
+
+Use multi_edit when modifying an existing script (the user must approve a diff before it runs). Use snapshot before risky writes so the user can undo. Use batch_execute when several small, independent steps should run together.
 
 Always respond in the user's language (Arabic or English). For pure conversation (no Studio action needed), reply normally without a task_plan block.`;
 
