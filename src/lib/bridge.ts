@@ -31,6 +31,11 @@ export const MCP_TOOL_ALLOWLIST = [
   "start_stop_play",
   "screen_capture",
   "list_roblox_studios",
+  "snapshot",
+  "batch_execute",
+  "watch_console",
+  "run_code",
+  "set_property",
 ] as const;
 export type McpTool = (typeof MCP_TOOL_ALLOWLIST)[number];
 
