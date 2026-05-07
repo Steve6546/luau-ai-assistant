@@ -315,7 +315,12 @@ function ChatPage() {
                   </div>
                 </div>
                 {t.snapshotId && t.status === "done" && (
-                  <Button size="sm" variant="ghost" className="h-6 px-2" title="Undo" onClick={() => undoTask(i)}>
+                  <Button size="sm" variant="ghost" className="h-6 px-2" title="Undo to snapshot" onClick={() => undoTask(i)}>
+                    <Undo2 className="w-3 h-3" />
+                  </Button>
+                )}
+                {!t.snapshotId && t.status === "done" && (
+                  <Button size="sm" variant="ghost" className="h-6 px-2 opacity-40" title="No snapshot available" disabled>
                     <Undo2 className="w-3 h-3" />
                   </Button>
                 )}
@@ -325,6 +330,7 @@ function ChatPage() {
               </div>
               {t.status === "awaiting_approval" && t.scriptPath && t.diffNew !== undefined && (
                 <div className="mt-2">
+                  <div className="text-[10px] text-amber-400 mb-1 uppercase tracking-wide">Awaiting approval — write tool blocked</div>
                   <ScriptDiffViewer
                     scriptPath={t.scriptPath}
                     originalContent={t.diffOriginal ?? ""}
@@ -334,6 +340,12 @@ function ChatPage() {
                   />
                 </div>
               )}
+              {t.approved === true && t.status === "done" && (
+                <div className="text-[10px] text-emerald-400 mb-1">✓ Approved diff applied</div>
+              )}
+              {t.approved === false && (
+                <div className="text-[10px] text-red-400 mb-1">✗ Rejected — write skipped</div>
+              )}
               {t.code && (
                 <pre className="text-[11px] bg-[#1e1e1e] rounded p-2 max-h-32 overflow-auto font-mono">{t.code}</pre>
               )}
@@ -341,6 +353,24 @@ function ChatPage() {
                 <div className="mt-2 text-[11px]">
                   <div className="text-muted-foreground mb-1">Output</div>
                   <pre className="bg-background/60 rounded p-2 max-h-40 overflow-auto whitespace-pre-wrap">{t.output}</pre>
+                </div>
+              )}
+              {t.logs && t.logs.length > 0 && (
+                <div className="mt-2 text-[11px]">
+                  <div className="text-muted-foreground mb-1 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot" /> Studio logs ({t.logs.length})
+                  </div>
+                  <div className="bg-[#0b0b0b] rounded p-2 max-h-40 overflow-auto font-mono space-y-0.5">
+                    {t.logs.map((l, k) => (
+                      <div key={k} className={
+                        l.level === "error" ? "text-red-400" :
+                        l.level === "warn" ? "text-amber-400" :
+                        l.level === "output" ? "text-sky-300" : "text-muted-foreground"
+                      }>
+                        <span className="opacity-50 mr-1">{new Date(l.ts).toLocaleTimeString()}</span>{l.message}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
