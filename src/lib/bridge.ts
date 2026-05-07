@@ -116,9 +116,9 @@ class BridgeClient {
     this.connect();
   }
 
-  subscribe = (cb: () => void) => {
+  subscribe = (cb: () => void): (() => void) => {
     this.listeners.add(cb);
-    return () => this.listeners.delete(cb);
+    return () => { this.listeners.delete(cb); };
   };
 
   /** Subscribe to unsolicited push events (studio_log, console, etc.). */
