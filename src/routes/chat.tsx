@@ -481,13 +481,13 @@ function ChatPage() {
 function StatusBadge({ status }: { status: RuntimeTask["status"] }) {
   const map: Record<RuntimeTask["status"], { color: string; label: string; icon: ReactNode }> = {
     pending: { color: "bg-muted text-muted-foreground", label: "Pending", icon: null },
-    awaiting_approval: { color: "bg-amber-500/20 text-amber-400", label: "Review", icon: null },
+    awaiting_approval: { color: "bg-amber-500/20 text-amber-400", label: "Awaiting approval", icon: null },
     running: { color: "bg-primary/20 text-primary", label: "Running", icon: <span className="w-1.5 h-1.5 rounded-full bg-primary pulse-dot inline-block" /> },
     testing: { color: "bg-sky-500/20 text-sky-400", label: "Testing", icon: <Loader2 className="w-3 h-3 animate-spin" /> },
     fixing: { color: "bg-amber-500/20 text-amber-400", label: "Fixing", icon: <Loader2 className="w-3 h-3 animate-spin" /> },
     done: { color: "bg-emerald-500/20 text-emerald-400", label: "Done", icon: <Check className="w-3 h-3" /> },
     failed: { color: "bg-destructive/20 text-destructive", label: "Failed", icon: <X className="w-3 h-3" /> },
-    cancelled: { color: "bg-muted text-muted-foreground", label: "Cancelled", icon: <X className="w-3 h-3" /> },
+    cancelled: { color: "bg-red-500/15 text-red-400", label: "Rejected", icon: <X className="w-3 h-3" /> },
   };
   const m = map[status];
   return <Badge className={`gap-1 ${m.color} border-0 font-normal text-[10px] px-1.5 py-0.5`}>{m.icon}{m.label}</Badge>;
