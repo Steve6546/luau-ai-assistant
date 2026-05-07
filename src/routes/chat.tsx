@@ -43,6 +43,7 @@ function ChatPage() {
   const bridge = useBridge();
   const executor = useTaskExecutor(activeId);
   const { tasks, setAll: setTasks, prepare: prepareTask, execute: executeTask, cancel: cancelTask, undo: undoTask, runAll: runAllTasks } = executor;
+  const autoRanRef = useRef<string | null>(null);
 
   useEffect(() => { setStoredModel(model); }, [model]);
 
@@ -198,6 +199,8 @@ function ChatPage() {
         setQuestions(plan.questions || []);
         setTasks(plan.tasks.map((t) => ({ ...t, status: "pending" })));
         setTaskPanelOpen(true);
+        // Auto-execute: bridge does the work, user only approves multi_edit diffs
+        autoRanRef.current = null;
       } else {
         setTasks([]); setQuestions([]);
       }
