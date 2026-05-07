@@ -161,6 +161,15 @@ class BridgeClient {
       this.reconnectAttempt = 0;
       this.lastPongAt = Date.now();
       this.ping();
+      // Subscribe to live studio logs (best-effort; ignored if unsupported)
+      try {
+        ws.send(JSON.stringify({
+          requestId: "studio_log_subscribe",
+          tool: "call_tool",
+          name: "studio_log",
+          arguments: { subscribe: true, stream: true },
+        }));
+      } catch {}
       this.heartbeat = setInterval(() => {
         // missed pong watchdog
         if (Date.now() - this.lastPongAt > 12000) {
