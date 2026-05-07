@@ -43,8 +43,21 @@ function ChatPage() {
   const bridge = useBridge();
   const executor = useTaskExecutor(activeId);
   const { tasks, setAll: setTasks, prepare: prepareTask, execute: executeTask, cancel: cancelTask, undo: undoTask, runAll: runAllTasks } = executor;
+  const autoRanRef = useRef<string | null>(null);
 
   useEffect(() => { setStoredModel(model); }, [model]);
+
+  // Auto-execute pending tasks when a fresh plan is loaded and bridge is ready.
+  useEffect(() => {
+    if (!tasks.length) return;
+    if (bridge.status !== "connected") return;
+    const allPending = tasks.every((t) => t.status === "pending");
+    if (!allPending) return;
+    const sig = tasks.map((t) => t.title + t.tool).join("|");
+    if (autoRanRef.current === sig) return;
+    autoRanRef.current = sig;
+    runAllTasks();
+  }, [tasks, bridge.status, runAllTasks]);
 
   // load convs
   useEffect(() => {
@@ -198,6 +211,8 @@ function ChatPage() {
         setQuestions(plan.questions || []);
         setTasks(plan.tasks.map((t) => ({ ...t, status: "pending" })));
         setTaskPanelOpen(true);
+        // Auto-execute: bridge does the work, user only approves multi_edit diffs
+        autoRanRef.current = null;
       } else {
         setTasks([]); setQuestions([]);
       }
@@ -300,7 +315,12 @@ function ChatPage() {
                   </div>
                 </div>
                 {t.snapshotId && t.status === "done" && (
-                  <Button size="sm" variant="ghost" className="h-6 px-2" title="Undo" onClick={() => undoTask(i)}>
+                  <Button size="sm" variant="ghost" className="h-6 px-2" title="Undo to snapshot" onClick={() => undoTask(i)}>
+                    <Undo2 className="w-3 h-3" />
+                  </Button>
+                )}
+                {!t.snapshotId && t.status === "done" && (
+                  <Button size="sm" variant="ghost" className="h-6 px-2 opacity-40" title="No snapshot available" disabled>
                     <Undo2 className="w-3 h-3" />
                   </Button>
                 )}
@@ -310,6 +330,7 @@ function ChatPage() {
               </div>
               {t.status === "awaiting_approval" && t.scriptPath && t.diffNew !== undefined && (
                 <div className="mt-2">
+                  <div className="text-[10px] text-amber-400 mb-1 uppercase tracking-wide">Awaiting approval — write tool blocked</div>
                   <ScriptDiffViewer
                     scriptPath={t.scriptPath}
                     originalContent={t.diffOriginal ?? ""}
@@ -319,6 +340,12 @@ function ChatPage() {
                   />
                 </div>
               )}
+              {t.approved === true && t.status === "done" && (
+                <div className="text-[10px] text-emerald-400 mb-1">✓ Approved diff applied</div>
+              )}
+              {t.approved === false && (
+                <div className="text-[10px] text-red-400 mb-1">✗ Rejected — write skipped</div>
+              )}
               {t.code && (
                 <pre className="text-[11px] bg-[#1e1e1e] rounded p-2 max-h-32 overflow-auto font-mono">{t.code}</pre>
               )}
@@ -326,6 +353,24 @@ function ChatPage() {
                 <div className="mt-2 text-[11px]">
                   <div className="text-muted-foreground mb-1">Output</div>
                   <pre className="bg-background/60 rounded p-2 max-h-40 overflow-auto whitespace-pre-wrap">{t.output}</pre>
+                </div>
+              )}
+              {t.logs && t.logs.length > 0 && (
+                <div className="mt-2 text-[11px]">
+                  <div className="text-muted-foreground mb-1 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 pulse-dot" /> Studio logs ({t.logs.length})
+                  </div>
+                  <div className="bg-[#0b0b0b] rounded p-2 max-h-40 overflow-auto font-mono space-y-0.5">
+                    {t.logs.map((l, k) => (
+                      <div key={k} className={
+                        l.level === "error" ? "text-red-400" :
+                        l.level === "warn" ? "text-amber-400" :
+                        l.level === "output" ? "text-sky-300" : "text-muted-foreground"
+                      }>
+                        <span className="opacity-50 mr-1">{new Date(l.ts).toLocaleTimeString()}</span>{l.message}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -436,13 +481,13 @@ function ChatPage() {
 function StatusBadge({ status }: { status: RuntimeTask["status"] }) {
   const map: Record<RuntimeTask["status"], { color: string; label: string; icon: ReactNode }> = {
     pending: { color: "bg-muted text-muted-foreground", label: "Pending", icon: null },
-    awaiting_approval: { color: "bg-amber-500/20 text-amber-400", label: "Review", icon: null },
+    awaiting_approval: { color: "bg-amber-500/20 text-amber-400", label: "Awaiting approval", icon: null },
     running: { color: "bg-primary/20 text-primary", label: "Running", icon: <span className="w-1.5 h-1.5 rounded-full bg-primary pulse-dot inline-block" /> },
     testing: { color: "bg-sky-500/20 text-sky-400", label: "Testing", icon: <Loader2 className="w-3 h-3 animate-spin" /> },
     fixing: { color: "bg-amber-500/20 text-amber-400", label: "Fixing", icon: <Loader2 className="w-3 h-3 animate-spin" /> },
     done: { color: "bg-emerald-500/20 text-emerald-400", label: "Done", icon: <Check className="w-3 h-3" /> },
     failed: { color: "bg-destructive/20 text-destructive", label: "Failed", icon: <X className="w-3 h-3" /> },
-    cancelled: { color: "bg-muted text-muted-foreground", label: "Cancelled", icon: <X className="w-3 h-3" /> },
+    cancelled: { color: "bg-red-500/15 text-red-400", label: "Rejected", icon: <X className="w-3 h-3" /> },
   };
   const m = map[status];
   return <Badge className={`gap-1 ${m.color} border-0 font-normal text-[10px] px-1.5 py-0.5`}>{m.icon}{m.label}</Badge>;

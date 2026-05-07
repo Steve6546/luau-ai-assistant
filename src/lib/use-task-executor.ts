@@ -1,10 +1,16 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { bridge, isAllowedTool, MCP_TOOL_ALLOWLIST } from "./bridge";
+import { bridge, isAllowedTool, MCP_TOOL_ALLOWLIST, type BridgePushEvent } from "./bridge";
 import type { PlannedTask } from "./parse-tasks";
 import { toast } from "sonner";
 
 export type TaskStatus = "pending" | "awaiting_approval" | "running" | "testing" | "fixing" | "done" | "failed" | "cancelled";
+
+export interface StudioLogEntry {
+  ts: number;
+  level: "info" | "warn" | "error" | "output";
+  message: string;
+}
 
 export interface RuntimeTask extends PlannedTask {
   status: TaskStatus;
@@ -17,6 +23,8 @@ export interface RuntimeTask extends PlannedTask {
   diffOriginal?: string;
   diffNew?: string;
   scriptPath?: string;
+  approved?: boolean | null;
+  logs?: StudioLogEntry[];
 }
 
 const WRITE_TOOLS = new Set(["multi_edit", "set_property", "run_code", "execute_luau"]);
@@ -52,12 +60,36 @@ function extractEdit(t: PlannedTask): { path: string; newContent: string } | nul
 
 export function useTaskExecutor(conversationId: string | null) {
   const [tasks, setTasks] = useState<RuntimeTask[]>([]);
+  /** Index of the currently-running task; used to route live studio logs. */
+  const activeIdxRef = useRef<number | null>(null);
 
   const update = useCallback((idx: number, patch: Partial<RuntimeTask>) => {
     setTasks((p) => p.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
   }, []);
 
   const setAll = useCallback((next: RuntimeTask[]) => setTasks(next), []);
+
+  const appendLog = useCallback((idx: number, entry: StudioLogEntry) => {
+    setTasks((p) => p.map((x, i) => i === idx
+      ? { ...x, logs: [...(x.logs || []), entry].slice(-200) }
+      : x));
+  }, []);
+
+  // Pipe live studio_log push events to the active task.
+  useEffect(() => {
+    const unsub = bridge.onPush((ev: BridgePushEvent) => {
+      const idx = activeIdxRef.current;
+      if (idx == null) return;
+      const type = String(ev.type || ev.event || "").toLowerCase();
+      if (!type.includes("log") && !type.includes("console") && !type.includes("output")) return;
+      const message = String(ev.message ?? ev.text ?? JSON.stringify(ev));
+      const lvl = String(ev.level || "info").toLowerCase();
+      const level: StudioLogEntry["level"] =
+        lvl.includes("err") ? "error" : lvl.includes("warn") ? "warn" : lvl.includes("out") ? "output" : "info";
+      appendLog(idx, { ts: Date.now(), level, message });
+    });
+    return () => { unsub(); };
+  }, [appendLog]);
 
   /** Take a snapshot before a write task. */
   const takeSnapshot = useCallback(async (label: string): Promise<string | null> => {
@@ -194,7 +226,8 @@ export function useTaskExecutor(conversationId: string | null) {
       const sid = await takeSnapshot(`Before: ${t.title}`);
       if (sid) snapshotId = sid;
     }
-    update(idx, { status: "running", output: undefined, snapshotId });
+    update(idx, { status: "running", output: undefined, snapshotId, logs: [] });
+    activeIdxRef.current = idx;
 
     let attempt = 0;
     let currentTask: RuntimeTask = { ...t, snapshotId };
@@ -250,6 +283,7 @@ export function useTaskExecutor(conversationId: string | null) {
           durationMs: lastDuration,
           retryCount: attempt,
           snapshotId,
+          approved: t.tool === "multi_edit" ? true : t.approved ?? null,
         });
 
         const { data: row } = await supabase.from("tasks").insert({
@@ -270,6 +304,7 @@ export function useTaskExecutor(conversationId: string | null) {
         update(idx, { taskRowId: (row as any)?.id });
         return;
       } catch (e: any) {
+        activeIdxRef.current = null;
         update(idx, {
           status: "failed",
           output: e?.message || "Task failed",
@@ -294,7 +329,7 @@ export function useTaskExecutor(conversationId: string | null) {
 
   const cancel = useCallback(async (idx: number) => {
     const t = tasks[idx];
-    update(idx, { status: "cancelled", output: "Cancelled by user" });
+    update(idx, { status: "cancelled", output: "❌ Rejected — write tool not executed", approved: false });
     if (conversationId) {
       await supabase.from("tasks").insert({
         conversation_id: conversationId,
@@ -312,16 +347,16 @@ export function useTaskExecutor(conversationId: string | null) {
   const undo = useCallback(async (idx: number) => {
     const t = tasks[idx];
     if (!t?.snapshotId) { toast.error("No snapshot available for this task"); return; }
+    if (bridge.getSnapshot().status !== "connected") { toast.error("Bridge not connected."); return; }
     const { data: snap } = await supabase.from("snapshots").select("snapshot_data").eq("id", t.snapshotId).maybeSingle();
-    if (!snap) { toast.error("Snapshot not found"); return; }
+    if (!snap || !snap.snapshot_data) { toast.error("Snapshot data missing — cannot undo"); return; }
     update(idx, { status: "running", output: "↩ Restoring previous Studio state…" });
     try {
-      const restoreCode = `local snapshot = game:GetService("HttpService"):JSONDecode([==[${JSON.stringify(snap.snapshot_data)}]==])\n-- restore_luau_from_snapshot expected on bridge side\nreturn snapshot`;
       await bridge.send({
         requestId: uuid(),
         tool: "call_tool",
         name: "run_code",
-        arguments: { code: restoreCode, snapshot: snap.snapshot_data },
+        arguments: { restore_snapshot_id: t.snapshotId, snapshot: snap.snapshot_data },
       }, 30000);
       update(idx, { status: "done", output: "✅ Restored to previous state from snapshot" });
       toast.success("Studio state restored");
