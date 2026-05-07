@@ -47,6 +47,18 @@ function ChatPage() {
 
   useEffect(() => { setStoredModel(model); }, [model]);
 
+  // Auto-execute pending tasks when a fresh plan is loaded and bridge is ready.
+  useEffect(() => {
+    if (!tasks.length) return;
+    if (bridge.status !== "connected") return;
+    const allPending = tasks.every((t) => t.status === "pending");
+    if (!allPending) return;
+    const sig = tasks.map((t) => t.title + t.tool).join("|");
+    if (autoRanRef.current === sig) return;
+    autoRanRef.current = sig;
+    runAllTasks();
+  }, [tasks, bridge.status, runAllTasks]);
+
   // load convs
   useEffect(() => {
     if (!user) return;
