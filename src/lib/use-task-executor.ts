@@ -77,7 +77,7 @@ export function useTaskExecutor(conversationId: string | null) {
 
   // Pipe live studio_log push events to the active task.
   useEffect(() => {
-    return bridge.onPush((ev: BridgePushEvent) => {
+    const unsub = bridge.onPush((ev: BridgePushEvent) => {
       const idx = activeIdxRef.current;
       if (idx == null) return;
       const type = String(ev.type || ev.event || "").toLowerCase();
@@ -88,6 +88,7 @@ export function useTaskExecutor(conversationId: string | null) {
         lvl.includes("err") ? "error" : lvl.includes("warn") ? "warn" : lvl.includes("out") ? "output" : "info";
       appendLog(idx, { ts: Date.now(), level, message });
     });
+    return () => { unsub; };
   }, [appendLog]);
 
   /** Take a snapshot before a write task. */
