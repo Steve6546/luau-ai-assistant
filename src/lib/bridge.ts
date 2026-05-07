@@ -122,9 +122,9 @@ class BridgeClient {
   };
 
   /** Subscribe to unsolicited push events (studio_log, console, etc.). */
-  onPush = (cb: (ev: BridgePushEvent) => void) => {
+  onPush = (cb: (ev: BridgePushEvent) => void): (() => void) => {
     this.pushListeners.add(cb);
-    return () => this.pushListeners.delete(cb);
+    return () => { this.pushListeners.delete(cb); };
   };
 
   getSnapshot = () => this.state;
