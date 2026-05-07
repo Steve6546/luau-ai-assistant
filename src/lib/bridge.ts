@@ -81,9 +81,21 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** Unsolicited push event from bridge (e.g. studio_log stream). */
+export interface BridgePushEvent {
+  type?: string;
+  event?: string;
+  level?: string;
+  message?: string;
+  text?: string;
+  source?: string;
+  [k: string]: unknown;
+}
+
 class BridgeClient {
   private ws: WebSocket | null = null;
   private listeners = new Set<() => void>();
+  private pushListeners = new Set<(ev: BridgePushEvent) => void>();
   private state: State = { status: "disconnected", latency: null };
   private pending = new Map<string, Pending>();
   private reconnectAttempt = 0;
@@ -107,6 +119,12 @@ class BridgeClient {
   subscribe = (cb: () => void) => {
     this.listeners.add(cb);
     return () => this.listeners.delete(cb);
+  };
+
+  /** Subscribe to unsolicited push events (studio_log, console, etc.). */
+  onPush = (cb: (ev: BridgePushEvent) => void) => {
+    this.pushListeners.add(cb);
+    return () => this.pushListeners.delete(cb);
   };
 
   getSnapshot = () => this.state;
@@ -161,13 +179,18 @@ class BridgeClient {
         clearTimeout(p.timer);
         this.pending.delete(data.requestId);
         p.resolve({ ...data, durationMs: Math.round(performance.now() - p.startedAt) });
+        return;
       }
       if (data.requestId === "ping") {
         this.lastPongAt = Date.now();
         const studioOk = !data.studio || data.studio === "connected";
         const mcpOk = !data.mcp || data.mcp === "ready";
         this.setState({ status: studioOk && mcpOk ? "connected" : "reconnecting" });
+        return;
       }
+      // Treat as push event (studio_log, console, etc.)
+      const evt = data as unknown as BridgePushEvent;
+      this.pushListeners.forEach((l) => { try { l(evt); } catch {} });
     };
     ws.onclose = () => { this.setState({ status: "disconnected", latency: null }); this.failPending("connection closed"); this.scheduleReconnect(); };
     ws.onerror = () => { this.setState({ status: "disconnected" }); };
