@@ -7,7 +7,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 export const DEFAULT_BRIDGE_URL =
-  "wss://martial-trembl-coupon-demonstrated.trycloudflare.com?token=test-token-roblox";
+  "wss://unquested-marline-nonrurally.ngrok-free.dev";
 
 export function getBridgeUrl(): string {
   if (typeof window === "undefined") return DEFAULT_BRIDGE_URL;
