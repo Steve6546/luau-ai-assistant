@@ -31,7 +31,7 @@ export interface RuntimeTask extends PlannedTask {
 const WRITE_TOOLS = new Set(["multi_edit", "set_property", "run_code", "execute_luau"]);
 const TEST_TOOLS = new Set(["run_code", "execute_luau", "multi_edit"]);
 /** Tools that never mutate Studio state — auto-approved with no diff. */
-const READ_ONLY_TOOLS = new Set([
+export const READ_ONLY_TOOLS = new Set([
   "script_read", "search_game_tree", "inspect_instance", "screen_capture",
   "list_roblox_studios", "get_hierarchy", "get_scripts", "watch_console",
   "studio_log", "ping",
