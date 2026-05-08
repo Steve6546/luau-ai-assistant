@@ -116,7 +116,7 @@ function tryParse(json: string): unknown {
  *
  * Returns `-1` if no balanced match is found before EOF.
  */
-function findMatchingBrace(content: string, start: number): number {
+export function findMatchingBrace(content: string, start: number): number {
   if (content[start] !== "{") return -1;
   let depth = 0;
   let inString = false;
@@ -235,4 +235,82 @@ export function parseTaskPlan(content: string): TaskPlan | null {
   }
 
   return null;
+}
+
+/**
+ * Remove every `task_plan` JSON block from `content` so the chat can
+ * render the surrounding prose without dumping the raw envelope.
+ *
+ * Strips:
+ *   1. Fenced ```json … ``` (or bare ``` … ```) blocks whose payload
+ *      parses to an object with `"type": "task_plan"`.
+ *   2. Unfenced raw objects containing `"type": "task_plan"` — located
+ *      with the same brace-balanced walk as `parseTaskPlan` so nested
+ *      objects don't truncate the slice.
+ *
+ * Anything that doesn't parse to a task plan is left alone (e.g. a JSON
+ * code sample the assistant happens to include unrelated to a plan).
+ */
+export function stripTaskPlanBlocks(content: string): string {
+  if (typeof content !== "string" || content.length === 0) return content;
+  const ranges: Array<[number, number]> = [];
+
+  const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let fenceMatch: RegExpExecArray | null;
+  while ((fenceMatch = fenceRe.exec(content)) !== null) {
+    const parsed = tryParse(fenceMatch[1].trim());
+    if (isObject(parsed) && parsed.type === "task_plan") {
+      ranges.push([fenceMatch.index, fenceMatch.index + fenceMatch[0].length]);
+    }
+  }
+
+  const seenStarts = new Set<number>();
+  const rawRe = /"task_plan"/g;
+  let rawMatch: RegExpExecArray | null;
+  while ((rawMatch = rawRe.exec(content)) !== null) {
+    const occ = rawMatch.index;
+    let cursor = content.lastIndexOf("{", occ);
+    while (cursor >= 0) {
+      if (!seenStarts.has(cursor)) {
+        seenStarts.add(cursor);
+        const end = findMatchingBrace(content, cursor);
+        if (end > occ) {
+          const slice = content.slice(cursor, end + 1);
+          const parsed = tryParse(slice);
+          if (isObject(parsed) && parsed.type === "task_plan") {
+            ranges.push([cursor, end + 1]);
+          }
+          break;
+        }
+      }
+      cursor = content.lastIndexOf("{", cursor - 1);
+    }
+  }
+
+  if (ranges.length === 0) return content;
+
+  // Merge overlapping ranges (a fenced block contains its inner raw
+  // object — we want a single deletion, not a double-strip).
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const [s, e] of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && s <= last[1]) {
+      last[1] = Math.max(last[1], e);
+    } else {
+      merged.push([s, e]);
+    }
+  }
+
+  let out = "";
+  let pos = 0;
+  for (const [s, e] of merged) {
+    out += content.slice(pos, s);
+    pos = e;
+  }
+  out += content.slice(pos);
+
+  // Collapse the blank lines left behind so the bubble doesn't grow
+  // a tall empty gap where the JSON block used to live.
+  return out.replace(/\n{3,}/g, "\n\n").trim();
 }
