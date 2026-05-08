@@ -124,7 +124,10 @@ export function StatusBar() {
       if (ev === "connected" || ev === "reconnected") {
         setState("connected");
         refresh();
-      } else if (ev === "reconnecting") {
+      } else if (ev === "connecting" || ev === "reconnecting") {
+        // The very first connect attempt emits "connecting"; treat it the
+        // same as "reconnecting" so the bar shows the yellow indicator
+        // instead of staying red until the WebSocket opens.
         setState("reconnecting");
       } else if (ev === "disconnected") {
         setState("disconnected");
@@ -155,10 +158,12 @@ export function StatusBar() {
     };
   }, []);
 
-  const bridgeVersion = health?.bridgeVersion?.trim() || "0.3.0";
+  const bridgeVersion = health?.bridgeVersion?.trim() ?? "";
   const bridgeLabel =
     state === "connected"
-      ? `🟢 Bridge v${bridgeVersion}`
+      ? bridgeVersion
+        ? `🟢 Bridge v${bridgeVersion}`
+        : "🟢 Bridge"
       : state === "reconnecting"
         ? "🟡 Reconnecting..."
         : "🔴 Bridge Offline";

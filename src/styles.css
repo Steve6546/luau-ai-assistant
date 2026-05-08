@@ -156,22 +156,6 @@
     height: 100%;
   }
 
-  /*
-   * Reserve 28px at the bottom of the viewport for the persistent StatusBar.
-   * Tailwind's `h-screen` and `min-h-screen` use raw 100vh; we shrink them so
-   * full-viewport layouts (e.g. the chat shell) sit above the bar instead of
-   * being hidden under it.
-   */
-  :root {
-    --statusbar-height: 28px;
-  }
-  .h-screen {
-    height: calc(100vh - var(--statusbar-height));
-  }
-  .min-h-screen {
-    min-height: calc(100vh - var(--statusbar-height));
-  }
-
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
@@ -200,4 +184,26 @@
       opacity: 0.4;
     }
   }
+}
+
+/*
+ * Reserve 28px at the bottom of the viewport for the persistent StatusBar.
+ *
+ * Tailwind v4 emits its `h-screen` / `min-h-screen` utilities into
+ * `@layer utilities`, which has higher cascade priority than `@layer base`,
+ * so overrides placed inside `@layer base` are silently lost. The
+ * `@utility` directive registers our overrides in the utilities layer so
+ * full-viewport layouts (e.g. the chat shell at `src/routes/chat.tsx`) sit
+ * above the bar instead of being hidden under it.
+ */
+:root {
+  --statusbar-height: 28px;
+}
+
+@utility h-screen {
+  height: calc(100vh - var(--statusbar-height));
+}
+
+@utility min-h-screen {
+  min-height: calc(100vh - var(--statusbar-height));
 }
