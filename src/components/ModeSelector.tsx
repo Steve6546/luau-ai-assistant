@@ -3,11 +3,12 @@ import { ChevronDown } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { useChatMode, type ChatMode } from "@/contexts/ChatModeContext";
+import { CHAT_MODES, useChatMode, type ChatMode } from "@/contexts/ChatModeContext";
 
 interface ModeMeta {
   value: ChatMode;
@@ -78,19 +79,30 @@ export function ModeSelector({ className }: ModeSelectorProps) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" sideOffset={6} className="min-w-[12rem]">
-        {MODES.map((m) => (
-          <DropdownMenuItem
-            key={m.value}
-            onSelect={() => setMode(m.value)}
-            className={cn("flex flex-col items-start gap-0.5", m.value === mode && "bg-accent/40")}
-          >
-            <span className="flex items-center gap-2 text-sm">
-              <span aria-hidden="true">{m.icon}</span>
-              <span>{m.label}</span>
-            </span>
-            <span className="text-xs text-muted-foreground">{m.description}</span>
-          </DropdownMenuItem>
-        ))}
+        <DropdownMenuRadioGroup
+          value={mode}
+          onValueChange={(next) => {
+            // Radix's onValueChange signature is (value: string), so guard
+            // before narrowing back to ChatMode.
+            if ((CHAT_MODES as readonly string[]).includes(next)) {
+              setMode(next as ChatMode);
+            }
+          }}
+        >
+          {MODES.map((m) => (
+            <DropdownMenuRadioItem
+              key={m.value}
+              value={m.value}
+              className="flex flex-col items-start gap-0.5 pl-8"
+            >
+              <span className="flex items-center gap-2 text-sm">
+                <span aria-hidden="true">{m.icon}</span>
+                <span>{m.label}</span>
+              </span>
+              <span className="text-xs text-muted-foreground">{m.description}</span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );

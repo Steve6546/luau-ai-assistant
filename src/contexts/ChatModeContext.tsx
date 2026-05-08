@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -50,6 +51,15 @@ function readStoredMode(): ChatMode {
 export function ChatModeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<ChatMode>(DEFAULT_MODE);
 
+  // Track whether the persist effect has skipped its first run yet. Both
+  // the hydration effect (which schedules a state update) and the
+  // persist effect fire on mount in declaration order; without this
+  // ref, the persist effect would write `DEFAULT_MODE` to localStorage
+  // *before* the scheduled hydration update lands, clobbering any
+  // previously stored preference if the tab is closed in that one-frame
+  // window.
+  const skipPersist = useRef(true);
+
   // Hydrate from localStorage on mount. We start with DEFAULT_MODE on the
   // server / first paint to keep SSR markup stable, then sync once the
   // client mounts.
@@ -62,6 +72,10 @@ export function ChatModeProvider({ children }: { children: ReactNode }) {
   // Persist + cross-tab sync.
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (skipPersist.current) {
+      skipPersist.current = false;
+      return;
+    }
     try {
       window.localStorage.setItem(STORAGE_KEY, mode);
     } catch {

@@ -109,10 +109,46 @@ function tryParse(json: string): unknown {
 }
 
 /**
+ * Find the index of the brace that closes the JSON object opened at
+ * `start`. Walks the string while tracking brace depth and skipping
+ * over string literals (so braces inside `"…{…}…"` don't disturb the
+ * count). Backslash escapes inside strings are honoured.
+ *
+ * Returns `-1` if no balanced match is found before EOF.
+ */
+function findMatchingBrace(content: string, start: number): number {
+  if (content[start] !== "{") return -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < content.length; i++) {
+    const ch = content[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
  * Pull every plausible JSON candidate out of `content`:
  *   1. Fenced ```json ... ``` (or bare ``` ... ```) blocks.
- *   2. Raw object containing the literal `"task_plan"` key, bounded by
- *      its nearest surrounding braces.
+ *   2. Raw object(s) containing the literal `"task_plan"` key. We walk
+ *      from the brace nearest to each `"task_plan"` occurrence and use
+ *      depth tracking to find its matching close brace, so nested
+ *      objects inside `tasks[*]`, `arguments`, etc. don't truncate the
+ *      slice.
  */
 function collectCandidates(content: string): string[] {
   const candidates: string[] = [];
@@ -120,19 +156,23 @@ function collectCandidates(content: string): string[] {
   // Match every fenced block, not just the first one — the assistant
   // may emit a code sample before the actual plan.
   const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gi;
-  let match: RegExpExecArray | null;
-  while ((match = fenceRe.exec(content)) !== null) {
-    candidates.push(match[1].trim());
+  let fenceMatch: RegExpExecArray | null;
+  while ((fenceMatch = fenceRe.exec(content)) !== null) {
+    candidates.push(fenceMatch[1].trim());
   }
 
-  // Raw, unfenced object containing "task_plan".
-  const rawIdx = content.indexOf('"task_plan"');
-  if (rawIdx >= 0) {
-    const start = content.lastIndexOf("{", rawIdx);
-    const end = content.indexOf("}", rawIdx);
-    if (start >= 0 && end > start) {
-      candidates.push(content.slice(start, end + 1));
-    }
+  // Raw, unfenced object(s) containing "task_plan". Use a global search
+  // so we don't miss a later occurrence if the first one belonged to an
+  // unrelated object (e.g. an example in prose).
+  const seenStarts = new Set<number>();
+  const rawRe = /"task_plan"/g;
+  let rawMatch: RegExpExecArray | null;
+  while ((rawMatch = rawRe.exec(content)) !== null) {
+    const start = content.lastIndexOf("{", rawMatch.index);
+    if (start < 0 || seenStarts.has(start)) continue;
+    seenStarts.add(start);
+    const end = findMatchingBrace(content, start);
+    if (end > start) candidates.push(content.slice(start, end + 1));
   }
 
   return candidates;
