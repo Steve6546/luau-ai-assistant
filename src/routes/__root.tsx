@@ -1,5 +1,6 @@
 import { Outlet, Link, createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
 import { AuthProvider } from "@/lib/auth-context";
+import { ChatModeProvider } from "@/contexts/ChatModeContext";
 import { Toaster } from "@/components/ui/sonner";
 import { StatusBar } from "@/components/StatusBar";
 
@@ -83,9 +84,11 @@ function RootShell({ children }: { children: React.ReactNode }) {
 function RootComponent() {
   return (
     <AuthProvider>
-      <Outlet />
-      <StatusBar />
-      <Toaster theme="dark" />
+      <ChatModeProvider>
+        <Outlet />
+        <StatusBar />
+        <Toaster theme="dark" />
+      </ChatModeProvider>
     </AuthProvider>
   );
 }
