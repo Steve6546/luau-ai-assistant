@@ -164,15 +164,31 @@ function collectCandidates(content: string): string[] {
   // Raw, unfenced object(s) containing "task_plan". Use a global search
   // so we don't miss a later occurrence if the first one belonged to an
   // unrelated object (e.g. an example in prose).
+  //
+  // For each occurrence we walk backwards through every `{` to its left
+  // and pick the *first* one whose matching close brace lands past the
+  // occurrence — that's the smallest enclosing object. The simpler
+  // `lastIndexOf("{", …)` shortcut breaks when `"task_plan"` is not the
+  // first key in the object: e.g. `{"title": "P", "tasks": [{"id": "1"}],
+  // "type": "task_plan"}` — `lastIndexOf` would land inside the task
+  // item, not on the outer brace.
   const seenStarts = new Set<number>();
   const rawRe = /"task_plan"/g;
   let rawMatch: RegExpExecArray | null;
   while ((rawMatch = rawRe.exec(content)) !== null) {
-    const start = content.lastIndexOf("{", rawMatch.index);
-    if (start < 0 || seenStarts.has(start)) continue;
-    seenStarts.add(start);
-    const end = findMatchingBrace(content, start);
-    if (end > start) candidates.push(content.slice(start, end + 1));
+    const occ = rawMatch.index;
+    let cursor = content.lastIndexOf("{", occ);
+    while (cursor >= 0) {
+      if (!seenStarts.has(cursor)) {
+        seenStarts.add(cursor);
+        const end = findMatchingBrace(content, cursor);
+        if (end > occ) {
+          candidates.push(content.slice(cursor, end + 1));
+          break;
+        }
+      }
+      cursor = content.lastIndexOf("{", cursor - 1);
+    }
   }
 
   return candidates;
