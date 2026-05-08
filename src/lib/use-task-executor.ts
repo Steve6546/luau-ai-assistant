@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { bridge, isAllowedTool, MCP_TOOL_ALLOWLIST, type BridgePushEvent } from "./bridge";
 import type { PlannedTask } from "./parse-tasks";
 import { toast } from "sonner";
+import { maybeCompress, decompress } from "./compress";
 
 export type TaskStatus = "pending" | "awaiting_approval" | "running" | "testing" | "fixing" | "done" | "failed" | "cancelled";
 
@@ -29,6 +30,12 @@ export interface RuntimeTask extends PlannedTask {
 
 const WRITE_TOOLS = new Set(["multi_edit", "set_property", "run_code", "execute_luau"]);
 const TEST_TOOLS = new Set(["run_code", "execute_luau", "multi_edit"]);
+/** Tools that never mutate Studio state — auto-approved with no diff. */
+const READ_ONLY_TOOLS = new Set([
+  "script_read", "search_game_tree", "inspect_instance", "screen_capture",
+  "list_roblox_studios", "get_hierarchy", "get_scripts", "watch_console",
+  "studio_log", "ping",
+]);
 const MAX_FIX_ATTEMPTS = 3;
 
 function uuid() { return crypto.randomUUID(); }
@@ -75,6 +82,42 @@ export function useTaskExecutor(conversationId: string | null) {
       : x));
   }, []);
 
+  /** Persist a single studio log entry to Supabase (best-effort). */
+  const persistLog = useCallback(async (entry: StudioLogEntry, taskRowId?: string) => {
+    if (!conversationId) return;
+    try {
+      await supabase.from("studio_logs").insert({
+        conversation_id: conversationId,
+        task_id: taskRowId ?? null,
+        level: entry.level,
+        message: entry.message,
+      });
+    } catch {}
+  }, [conversationId]);
+
+  /** Write an audit row for an MCP tool call. */
+  const writeAudit = useCallback(async (row: {
+    tool: string; action: string; arguments?: unknown;
+    result_status?: string; duration_ms?: number; error?: string;
+    task_id?: string;
+  }) => {
+    try {
+      const { data: u } = await supabase.auth.getUser();
+      if (!u?.user) return;
+      await supabase.from("audit_logs").insert({
+        user_id: u.user.id,
+        conversation_id: conversationId,
+        task_id: row.task_id ?? null,
+        tool: row.tool,
+        action: row.action,
+        arguments: (row.arguments ?? null) as never,
+        result_status: row.result_status ?? null,
+        duration_ms: row.duration_ms ?? null,
+        error: row.error ?? null,
+      });
+    } catch {}
+  }, [conversationId]);
+
   // Pipe live studio_log push events to the active task.
   useEffect(() => {
     const unsub = bridge.onPush((ev: BridgePushEvent) => {
@@ -86,10 +129,12 @@ export function useTaskExecutor(conversationId: string | null) {
       const lvl = String(ev.level || "info").toLowerCase();
       const level: StudioLogEntry["level"] =
         lvl.includes("err") ? "error" : lvl.includes("warn") ? "warn" : lvl.includes("out") ? "output" : "info";
-      appendLog(idx, { ts: Date.now(), level, message });
+      const entry: StudioLogEntry = { ts: Date.now(), level, message };
+      appendLog(idx, entry);
+      void persistLog(entry);
     });
     return () => { unsub(); };
-  }, [appendLog]);
+  }, [appendLog, persistLog]);
 
   /** Take a snapshot before a write task. */
   const takeSnapshot = useCallback(async (label: string): Promise<string | null> => {
@@ -102,8 +147,9 @@ export function useTaskExecutor(conversationId: string | null) {
         arguments: {},
       }, 20000);
       const data = res.output ?? res.result ?? {};
+      const stored = await maybeCompress(data);
       const { data: row } = await supabase.from("snapshots")
-        .insert({ conversation_id: conversationId, snapshot_data: data as any, label })
+        .insert({ conversation_id: conversationId, snapshot_data: stored as never, label })
         .select().single();
       return (row as any)?.id ?? null;
     } catch (e: any) {
@@ -181,13 +227,31 @@ export function useTaskExecutor(conversationId: string | null) {
     if (!isAllowedTool(t.tool)) {
       throw new Error(`Tool '${t.tool}' is not in the MCP allowlist (${MCP_TOOL_ALLOWLIST.join(", ")})`);
     }
-    return bridge.send({
-      requestId: uuid(),
-      tool: "call_tool",
-      name: t.tool,
-      arguments: t.code ? { code: t.code, ...t.arguments } : (t.arguments || {}),
-    });
-  }, []);
+    const args = t.code ? { code: t.code, ...t.arguments } : (t.arguments || {});
+    const started = performance.now();
+    try {
+      const res = await bridge.send({ requestId: uuid(), tool: "call_tool", name: t.tool, arguments: args });
+      void writeAudit({
+        tool: t.tool,
+        action: "call_tool",
+        arguments: args,
+        result_status: res.error || res.status === "error" ? "error" : "ok",
+        duration_ms: res.durationMs ?? Math.round(performance.now() - started),
+        error: res.error,
+      });
+      return res;
+    } catch (e) {
+      void writeAudit({
+        tool: t.tool,
+        action: "call_tool",
+        arguments: args,
+        result_status: "error",
+        duration_ms: Math.round(performance.now() - started),
+        error: e instanceof Error ? e.message : String(e),
+      });
+      throw e;
+    }
+  }, [writeAudit]);
 
   /** Prepare a task: for write tools, fetch original content and switch to awaiting_approval. */
   const prepare = useCallback(async (idx: number) => {
@@ -206,7 +270,7 @@ export function useTaskExecutor(conversationId: string | null) {
         return;
       }
     }
-    // No diff preview required → run directly
+    // Read-only or non-edit tools → auto-approve and execute directly
     await execute(idx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks]);
@@ -350,13 +414,14 @@ export function useTaskExecutor(conversationId: string | null) {
     if (bridge.getSnapshot().status !== "connected") { toast.error("Bridge not connected."); return; }
     const { data: snap } = await supabase.from("snapshots").select("snapshot_data").eq("id", t.snapshotId).maybeSingle();
     if (!snap || !snap.snapshot_data) { toast.error("Snapshot data missing — cannot undo"); return; }
+    const restored = await decompress(snap.snapshot_data);
     update(idx, { status: "running", output: "↩ Restoring previous Studio state…" });
     try {
       await bridge.send({
         requestId: uuid(),
         tool: "call_tool",
         name: "run_code",
-        arguments: { restore_snapshot_id: t.snapshotId, snapshot: snap.snapshot_data },
+        arguments: { restore_snapshot_id: t.snapshotId, snapshot: restored },
       }, 30000);
       update(idx, { status: "done", output: "✅ Restored to previous state from snapshot" });
       toast.success("Studio state restored");
