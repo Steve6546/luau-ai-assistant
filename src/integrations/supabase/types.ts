@@ -14,6 +14,48 @@ export type Database = {
   }
   public: {
     Tables: {
+      audit_logs: {
+        Row: {
+          action: string
+          arguments: Json | null
+          conversation_id: string | null
+          created_at: string
+          duration_ms: number | null
+          error: string | null
+          id: string
+          result_status: string | null
+          task_id: string | null
+          tool: string
+          user_id: string
+        }
+        Insert: {
+          action: string
+          arguments?: Json | null
+          conversation_id?: string | null
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          id?: string
+          result_status?: string | null
+          task_id?: string | null
+          tool: string
+          user_id: string
+        }
+        Update: {
+          action?: string
+          arguments?: Json | null
+          conversation_id?: string | null
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          id?: string
+          result_status?: string | null
+          task_id?: string | null
+          tool?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       conversations: {
         Row: {
           created_at: string
@@ -144,6 +186,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      studio_logs: {
+        Row: {
+          conversation_id: string
+          created_at: string
+          id: string
+          level: string
+          message: string
+          source: string | null
+          task_id: string | null
+        }
+        Insert: {
+          conversation_id: string
+          created_at?: string
+          id?: string
+          level?: string
+          message: string
+          source?: string | null
+          task_id?: string | null
+        }
+        Update: {
+          conversation_id?: string
+          created_at?: string
+          id?: string
+          level?: string
+          message?: string
+          source?: string | null
+          task_id?: string | null
+        }
+        Relationships: []
       }
       tasks: {
         Row: {
