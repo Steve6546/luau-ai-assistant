@@ -462,6 +462,7 @@ function ChatPage() {
                   ))}
                 </PopoverContent>
               </Popover>
+              <ModeSelector />
               <Textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -499,23 +500,6 @@ function StatusBadge({ status }: { status: RuntimeTask["status"] }) {
   };
   const m = map[status];
   return <Badge className={`gap-1 ${m.color} border-0 font-normal text-[10px] px-1.5 py-0.5`}>{m.icon}{m.label}</Badge>;
-}
-
-function BridgeIndicator({ status, latency, onReconnect }: { status: BridgeStatus; latency: number | null; onReconnect: () => void }) {
-  const map = {
-    connected: { dot: "bg-emerald-500", label: "Connected" },
-    reconnecting: { dot: "bg-amber-500 animate-pulse", label: "Reconnecting" },
-    disconnected: { dot: "bg-red-500", label: "Disconnected" },
-  } as const;
-  const m = map[status];
-  return (
-    <button onClick={onReconnect} title="Click to reconnect"
-      className="flex items-center gap-2 text-xs text-muted-foreground px-2 py-1 rounded-md bg-card/60 border border-border hover:border-primary/40 transition-colors">
-      <span className={`w-2 h-2 rounded-full ${m.dot}`} />
-      <span>{m.label}{latency != null && status === "connected" ? ` · ${latency}ms` : ""}</span>
-      {status !== "connected" && <RefreshCw className="w-3 h-3" />}
-    </button>
-  );
 }
 
 function GoogleIcon() {
