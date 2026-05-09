@@ -106,13 +106,7 @@ class LegacyBridge {
     bridgeClient.subscribeStudioLog((ev: StudioLogEvent) => {
       this.pushListeners.forEach((l) => {
         try {
-          l({
-            type: "studio_log",
-            level: ev.level,
-            message: ev.message,
-            source: ev.source,
-            ...ev,
-          });
+          l({ ...ev, type: "studio_log" });
         } catch {
           /* listener errors swallowed */
         }
@@ -122,7 +116,7 @@ class LegacyBridge {
     bridgeClient.subscribeHeartbeat((ev: HeartbeatEvent) => {
       this.pushListeners.forEach((l) => {
         try {
-          l({ type: "heartbeat", ...ev });
+          l({ ...ev, type: "heartbeat" });
         } catch {
           /* swallow */
         }
