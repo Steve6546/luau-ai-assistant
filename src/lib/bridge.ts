@@ -1,13 +1,35 @@
 /**
- * Roblox Studio MCP bridge over WebSocket.
- * Singleton connection with auto-reconnect (exponential backoff),
- * 5s heartbeat ping, latency tracking, request timeouts, and a
- * tool allowlist enforced before any send().
+ * Legacy bridge API — now a thin compatibility shim over the central
+ * `bridgeClient` (src/services/bridgeClient.ts). Existing call sites
+ * (`bridge.send`, `bridge.onPush`, `useBridge`) continue to work, but
+ * every WebSocket frame goes through ONE shared connection.
+ *
+ * Also re-exports the MCP tool catalog from src/lib/mcp-tools so older
+ * imports keep working.
  */
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
+import {
+  bridgeClient,
+  DEFAULT_BRIDGE_URL as CLIENT_DEFAULT_URL,
+  type BridgeEnvelope,
+  type StudioLogEvent,
+  type HeartbeatEvent,
+} from "@/services/bridgeClient";
 
-export const DEFAULT_BRIDGE_URL =
-  "wss://unquested-marline-nonrurally.ngrok-free.dev";
+export {
+  MCP_TOOL_ALLOWLIST,
+  isAllowedTool,
+  PUBLIC_MCP_TOOLS,
+  INFRA_TOOLS,
+  READ_ONLY_TOOLS,
+  WRITE_TOOLS,
+  TEST_TOOLS,
+  TOOL_DESCRIPTIONS,
+  type McpTool,
+} from "@/lib/mcp-tools";
+import { isAllowedTool } from "@/lib/mcp-tools";
+
+export const DEFAULT_BRIDGE_URL = CLIENT_DEFAULT_URL;
 
 export function getBridgeUrl(): string {
   if (typeof window === "undefined") return DEFAULT_BRIDGE_URL;
@@ -15,40 +37,16 @@ export function getBridgeUrl(): string {
 }
 
 export function setBridgeUrl(url: string) {
-  localStorage.setItem("bridge_url", url);
-  bridge.reconnect();
+  if (typeof window !== "undefined") localStorage.setItem("bridge_url", url);
+  try {
+    bridgeClient.disconnect();
+    bridgeClient.connect().catch(() => {});
+  } catch {
+    /* defensive */
+  }
 }
 
 export type BridgeStatus = "connected" | "reconnecting" | "disconnected";
-
-/** Whitelisted MCP tool names that may be invoked via call_tool. */
-export const MCP_TOOL_ALLOWLIST = [
-  "execute_luau",
-  "script_read",
-  "multi_edit",
-  "search_game_tree",
-  "inspect_instance",
-  "start_stop_play",
-  "screen_capture",
-  "list_roblox_studios",
-  "snapshot",
-  "batch_execute",
-  "watch_console",
-  "run_code",
-  "set_property",
-  "get_hierarchy",
-  "get_scripts",
-  "insert_instance",
-  "delete_instance",
-  "rename_instance",
-  "move_instance",
-  "studio_log",
-] as const;
-export type McpTool = (typeof MCP_TOOL_ALLOWLIST)[number];
-
-export function isAllowedTool(name: string): name is McpTool {
-  return (MCP_TOOL_ALLOWLIST as readonly string[]).includes(name);
-}
 
 export interface BridgeMessage {
   requestId: string;
@@ -69,19 +67,6 @@ export interface BridgeResponse {
   studio?: string;
 }
 
-interface State {
-  status: BridgeStatus;
-  latency: number | null;
-}
-
-interface Pending {
-  resolve: (v: BridgeResponse & { durationMs: number }) => void;
-  reject: (e: Error) => void;
-  startedAt: number;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-/** Unsolicited push event from bridge (e.g. studio_log stream). */
 export interface BridgePushEvent {
   type?: string;
   event?: string;
@@ -92,176 +77,118 @@ export interface BridgePushEvent {
   [k: string]: unknown;
 }
 
-class BridgeClient {
-  private ws: WebSocket | null = null;
+interface State {
+  status: BridgeStatus;
+  latency: number | null;
+}
+
+class LegacyBridge {
   private listeners = new Set<() => void>();
   private pushListeners = new Set<(ev: BridgePushEvent) => void>();
   private state: State = { status: "disconnected", latency: null };
-  private pending = new Map<string, Pending>();
-  private reconnectAttempt = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private heartbeat: ReturnType<typeof setInterval> | null = null;
-  private lastPongAt = 0;
   private started = false;
 
   start() {
     if (this.started || typeof window === "undefined") return;
     this.started = true;
-    this.connect();
+
+    // Map central client lifecycle → legacy state.
+    bridgeClient.subscribeLifecycle((ev) => {
+      if (ev === "connected" || ev === "reconnected") {
+        this.setState({ status: "connected" });
+      } else if (ev === "connecting" || ev === "reconnecting") {
+        this.setState({ status: "reconnecting" });
+      } else {
+        this.setState({ status: "disconnected", latency: null });
+      }
+    });
+
+    bridgeClient.subscribeStudioLog((ev: StudioLogEvent) => {
+      this.pushListeners.forEach((l) => {
+        try {
+          l({ ...ev, type: "studio_log" });
+        } catch {
+          /* listener errors swallowed */
+        }
+      });
+    });
+
+    bridgeClient.subscribeHeartbeat((ev: HeartbeatEvent) => {
+      this.pushListeners.forEach((l) => {
+        try {
+          l({ ...ev, type: "heartbeat" });
+        } catch {
+          /* swallow */
+        }
+      });
+    });
+
+    bridgeClient.connect().catch(() => {
+      /* lifecycle handler will reflect failure */
+    });
+    if (bridgeClient.isConnected()) this.setState({ status: "connected" });
   }
 
   reconnect() {
-    this.cleanup();
-    this.reconnectAttempt = 0;
-    this.connect();
+    bridgeClient.disconnect();
+    bridgeClient.connect().catch(() => {});
   }
 
   subscribe = (cb: () => void): (() => void) => {
     this.listeners.add(cb);
-    return () => { this.listeners.delete(cb); };
+    return () => {
+      this.listeners.delete(cb);
+    };
   };
 
-  /** Subscribe to unsolicited push events (studio_log, console, etc.). */
   onPush = (cb: (ev: BridgePushEvent) => void): (() => void) => {
     this.pushListeners.add(cb);
-    return () => { this.pushListeners.delete(cb); };
+    return () => {
+      this.pushListeners.delete(cb);
+    };
   };
 
   getSnapshot = () => this.state;
 
   private setState(next: Partial<State>) {
-    this.state = { ...this.state, ...next };
+    const merged = { ...this.state, ...next };
+    if (merged.status === this.state.status && merged.latency === this.state.latency) return;
+    this.state = merged;
     this.listeners.forEach((l) => l());
   }
 
-  private cleanup() {
-    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-    if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
-    if (this.ws) {
-      try { this.ws.onopen = this.ws.onmessage = this.ws.onclose = this.ws.onerror = null; this.ws.close(); } catch {}
-      this.ws = null;
+  async send(
+    msg: BridgeMessage,
+    _timeoutMs?: number,
+  ): Promise<BridgeResponse & { durationMs: number }> {
+    if (msg.tool === "call_tool" && (!msg.name || !isAllowedTool(msg.name))) {
+      throw new Error(`Tool '${msg.name}' is not in the MCP allowlist`);
     }
-  }
+    const extra: Record<string, unknown> = {};
+    if (msg.name !== undefined) extra.name = msg.name;
+    if (msg.arguments !== undefined) extra.arguments = msg.arguments;
+    if (msg.code !== undefined) extra.code = msg.code;
+    if (msg.params !== undefined) extra.params = msg.params;
 
-  private scheduleReconnect() {
-    this.setState({ status: "reconnecting" });
-    const delay = Math.min(30000, 500 * Math.pow(2, this.reconnectAttempt++));
-    this.reconnectTimer = setTimeout(() => this.connect(), delay);
-  }
+    const env: BridgeEnvelope = await bridgeClient.send(msg.tool, extra);
 
-  private connect() {
-    this.cleanup();
-    this.setState({ status: "reconnecting" });
-    let ws: WebSocket;
-    try { ws = new WebSocket(getBridgeUrl()); }
-    catch { this.setState({ status: "disconnected" }); this.scheduleReconnect(); return; }
-    this.ws = ws;
+    // Update latency from the most recent round-trip.
+    if (typeof env.durationMs === "number") {
+      this.setState({ latency: Math.round(env.durationMs) });
+    }
 
-    ws.onopen = () => {
-      this.reconnectAttempt = 0;
-      this.lastPongAt = Date.now();
-      this.ping();
-      // Subscribe to live studio logs (best-effort; ignored if unsupported)
-      try {
-        ws.send(JSON.stringify({
-          requestId: "studio_log_subscribe",
-          tool: "call_tool",
-          name: "studio_log",
-          arguments: { subscribe: true, stream: true },
-        }));
-      } catch {}
-      this.heartbeat = setInterval(() => {
-        // missed pong watchdog
-        if (Date.now() - this.lastPongAt > 12000) {
-          this.setState({ status: "reconnecting", latency: null });
-          ws.close();
-          return;
-        }
-        this.ping();
-      }, 5000);
+    return {
+      requestId: env.requestId,
+      status: env.status === "success" ? "ok" : "error",
+      output: env.output,
+      error: env.error ?? undefined,
+      result: env.output,
+      durationMs: env.durationMs ?? 0,
     };
-    ws.onmessage = (ev) => {
-      let data: BridgeResponse;
-      try { data = JSON.parse(ev.data); } catch { return; }
-      const p = this.pending.get(data.requestId);
-      if (p) {
-        clearTimeout(p.timer);
-        this.pending.delete(data.requestId);
-        p.resolve({ ...data, durationMs: Math.round(performance.now() - p.startedAt) });
-        return;
-      }
-      if (data.requestId === "ping") {
-        this.lastPongAt = Date.now();
-        const studioOk = !data.studio || data.studio === "connected";
-        const mcpOk = !data.mcp || data.mcp === "ready";
-        this.setState({ status: studioOk && mcpOk ? "connected" : "reconnecting" });
-        return;
-      }
-      // Treat as push event (studio_log, console, etc.)
-      const evt = data as unknown as BridgePushEvent;
-      this.pushListeners.forEach((l) => { try { l(evt); } catch {} });
-    };
-    ws.onclose = () => { this.setState({ status: "disconnected", latency: null }); this.failPending("connection closed"); this.scheduleReconnect(); };
-    ws.onerror = () => { this.setState({ status: "disconnected" }); };
-  }
-
-  private failPending(reason: string) {
-    for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(new Error(reason)); }
-    this.pending.clear();
-  }
-
-  private pingStart = 0;
-  private ping() {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.pingStart = performance.now();
-    try {
-      this.ws.send(JSON.stringify({ requestId: "ping", tool: "ping" }));
-      // latency updated on response
-      const start = this.pingStart;
-      const onMsg = (ev: MessageEvent) => {
-        try {
-          const d = JSON.parse(ev.data);
-          if (d.requestId === "ping") {
-            this.setState({ latency: Math.round(performance.now() - start) });
-            this.ws?.removeEventListener("message", onMsg);
-          }
-        } catch {}
-      };
-      this.ws.addEventListener("message", onMsg);
-    } catch {}
-  }
-
-  send(msg: BridgeMessage, timeoutMs = 30000): Promise<BridgeResponse & { durationMs: number }> {
-    return new Promise((resolve, reject) => {
-      // Enforce allowlist for call_tool
-      if (msg.tool === "call_tool" && (!msg.name || !isAllowedTool(msg.name))) {
-        reject(new Error(`Tool '${msg.name}' is not in the MCP allowlist`));
-        return;
-      }
-      if (this.state.status !== "connected") {
-        reject(new Error("Bridge not connected"));
-        return;
-      }
-      const ws = this.ws;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        reject(new Error("Bridge socket not open"));
-        return;
-      }
-      const startedAt = performance.now();
-      const timer = setTimeout(() => {
-        if (this.pending.has(msg.requestId)) {
-          this.pending.delete(msg.requestId);
-          reject(new Error("Bridge request timed out"));
-        }
-      }, timeoutMs);
-      this.pending.set(msg.requestId, { resolve, reject, startedAt, timer });
-      try { ws.send(JSON.stringify(msg)); }
-      catch (e) { clearTimeout(timer); this.pending.delete(msg.requestId); reject(e as Error); }
-    });
   }
 }
 
-export const bridge = new BridgeClient();
+export const bridge = new LegacyBridge();
 if (typeof window !== "undefined") bridge.start();
 
 export function useBridge() {
@@ -273,6 +200,3 @@ export function useBridge() {
     reconnect: () => bridge.reconnect(),
   };
 }
-
-// keep useEffect/useState used (avoid unused import warnings if tree-shaken)
-void useEffect; void useState;

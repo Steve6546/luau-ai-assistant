@@ -5,10 +5,12 @@ import { useAuth } from "@/lib/auth-context";
 import { RequireAuth, TopNav } from "@/components/AppShell";
 import { MarkdownMessage } from "@/components/MarkdownMessage";
 import { MODELS, getStoredModel, setStoredModel, type ModelId } from "@/lib/models";
-import { useBridge, type BridgeStatus } from "@/lib/bridge";
+import { useBridge } from "@/lib/bridge";
 import { extractTaskPlan } from "@/lib/parse-tasks";
 import { useTaskExecutor, type RuntimeTask } from "@/lib/use-task-executor";
 import { ScriptDiffViewer } from "@/components/ScriptDiffViewer";
+import { ModeSelector } from "@/components/ModeSelector";
+import { useChatMode } from "@/contexts/ChatModeContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -18,7 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import {
   Plus, Search, Send, Sparkles, MessageSquare, Trash2, LogOut,
-  ListChecks, Check, X, Loader2, ChevronDown, Play, History, RefreshCw, Undo2,
+  ListChecks, Check, X, Loader2, ChevronDown, Play, History, Undo2,
 } from "lucide-react";
 
 export const Route = createFileRoute("/chat")({
@@ -41,7 +43,8 @@ function ChatPage() {
   const [questions, setQuestions] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bridge = useBridge();
-  const executor = useTaskExecutor(activeId);
+  const { mode } = useChatMode();
+  const executor = useTaskExecutor(activeId, mode);
   const { tasks, setAll: setTasks, prepare: prepareTask, execute: executeTask, cancel: cancelTask, undo: undoTask, runAll: runAllTasks } = executor;
   const autoRanRef = useRef<string | null>(null);
 
@@ -50,6 +53,7 @@ function ChatPage() {
   // Auto-execute pending tasks when a fresh plan is loaded and bridge is ready.
   useEffect(() => {
     if (!tasks.length) return;
+    if (mode === "plan") return; // plan mode never executes
     if (bridge.status !== "connected") return;
     const allPending = tasks.every((t) => t.status === "pending");
     if (!allPending) return;
@@ -57,7 +61,7 @@ function ChatPage() {
     if (autoRanRef.current === sig) return;
     autoRanRef.current = sig;
     runAllTasks();
-  }, [tasks, bridge.status, runAllTasks]);
+  }, [tasks, bridge.status, runAllTasks, mode]);
 
   // load convs
   useEffect(() => {
@@ -163,7 +167,12 @@ function ChatPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
         },
-        body: JSON.stringify({ messages: history, model }),
+        body: JSON.stringify({
+          messages: history,
+          model,
+          mode,
+          bridgeConnected: bridge.status === "connected",
+        }),
       });
       if (resp.status === 429) { toast.error("Rate limit. Try again shortly."); throw new Error("rate"); }
       if (resp.status === 402) { toast.error("AI credits exhausted."); throw new Error("credits"); }
@@ -391,7 +400,6 @@ function ChatPage() {
             <span className="text-sm font-semibold hidden sm:inline">Roblox AI</span>
           </div>
           {HistoryPopover}
-          <BridgeIndicator status={bridge.status} latency={bridge.latency} onReconnect={bridge.reconnect} />
           <div className="flex-1" />
           <TopNav />
           <Button variant="ghost" size="sm" className="lg:hidden gap-1 h-8" onClick={() => setTaskPanelOpen((v) => !v)}>
@@ -454,6 +462,7 @@ function ChatPage() {
                   ))}
                 </PopoverContent>
               </Popover>
+              <ModeSelector />
               <Textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -491,23 +500,6 @@ function StatusBadge({ status }: { status: RuntimeTask["status"] }) {
   };
   const m = map[status];
   return <Badge className={`gap-1 ${m.color} border-0 font-normal text-[10px] px-1.5 py-0.5`}>{m.icon}{m.label}</Badge>;
-}
-
-function BridgeIndicator({ status, latency, onReconnect }: { status: BridgeStatus; latency: number | null; onReconnect: () => void }) {
-  const map = {
-    connected: { dot: "bg-emerald-500", label: "Connected" },
-    reconnecting: { dot: "bg-amber-500 animate-pulse", label: "Reconnecting" },
-    disconnected: { dot: "bg-red-500", label: "Disconnected" },
-  } as const;
-  const m = map[status];
-  return (
-    <button onClick={onReconnect} title="Click to reconnect"
-      className="flex items-center gap-2 text-xs text-muted-foreground px-2 py-1 rounded-md bg-card/60 border border-border hover:border-primary/40 transition-colors">
-      <span className={`w-2 h-2 rounded-full ${m.dot}`} />
-      <span>{m.label}{latency != null && status === "connected" ? ` · ${latency}ms` : ""}</span>
-      {status !== "connected" && <RefreshCw className="w-3 h-3" />}
-    </button>
-  );
 }
 
 function GoogleIcon() {

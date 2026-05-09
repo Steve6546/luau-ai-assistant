@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { bridge, isAllowedTool, MCP_TOOL_ALLOWLIST, type BridgePushEvent } from "./bridge";
+import { bridge, type BridgePushEvent } from "./bridge";
+import {
+  isAllowedTool,
+  MCP_TOOL_ALLOWLIST,
+  READ_ONLY_TOOLS,
+  WRITE_TOOLS,
+  TEST_TOOLS,
+} from "./mcp-tools";
 import type { PlannedTask } from "./parse-tasks";
 import { toast } from "sonner";
 import { maybeCompress, decompress } from "./compress";
+import type { ChatMode } from "@/contexts/ChatModeContext";
 
 export type TaskStatus = "pending" | "awaiting_approval" | "running" | "testing" | "fixing" | "done" | "failed" | "cancelled";
 
@@ -28,14 +36,7 @@ export interface RuntimeTask extends PlannedTask {
   logs?: StudioLogEntry[];
 }
 
-const WRITE_TOOLS = new Set(["multi_edit", "set_property", "run_code", "execute_luau"]);
-const TEST_TOOLS = new Set(["run_code", "execute_luau", "multi_edit"]);
-/** Tools that never mutate Studio state — auto-approved with no diff. */
-export const READ_ONLY_TOOLS = new Set([
-  "script_read", "search_game_tree", "inspect_instance", "screen_capture",
-  "list_roblox_studios", "get_hierarchy", "get_scripts", "watch_console",
-  "studio_log", "ping",
-]);
+export { READ_ONLY_TOOLS, WRITE_TOOLS, TEST_TOOLS };
 const MAX_FIX_ATTEMPTS = 3;
 
 function uuid() { return crypto.randomUUID(); }
@@ -65,7 +66,7 @@ function extractEdit(t: PlannedTask): { path: string; newContent: string } | nul
   return { path, newContent: content };
 }
 
-export function useTaskExecutor(conversationId: string | null) {
+export function useTaskExecutor(conversationId: string | null, mode: ChatMode = "agent") {
   const [tasks, setTasks] = useState<RuntimeTask[]>([]);
   /** Index of the currently-running task; used to route live studio logs. */
   const activeIdxRef = useRef<number | null>(null);
@@ -257,9 +258,17 @@ export function useTaskExecutor(conversationId: string | null) {
   const prepare = useCallback(async (idx: number) => {
     const t = tasks[idx];
     if (!t) return;
+    if (mode === "plan") {
+      toast.message("Plan mode is read-only. Switch to Agent mode to execute tasks.");
+      return;
+    }
     if (bridge.getSnapshot().status !== "connected") {
       toast.error("Bridge not connected. Connect Roblox Studio first.");
       return;
+    }
+    // Plan-mode safety: never run write tools even if mode flips mid-task.
+    if (mode !== "agent" && WRITE_TOOLS.has(t.tool) && t.tool !== "multi_edit") {
+      // auto_safe still allows writes after diff approval — keep going
     }
     if (t.tool === "multi_edit") {
       const edit = extractEdit(t);
@@ -273,12 +282,16 @@ export function useTaskExecutor(conversationId: string | null) {
     // Read-only or non-edit tools → auto-approve and execute directly
     await execute(idx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tasks]);
+  }, [tasks, mode]);
 
   /** Execute a task end-to-end: snapshot → run → self-test → auto-fix loop. */
   const execute = useCallback(async (idx: number) => {
     const t = tasks[idx];
     if (!t || !conversationId) return;
+    if (mode === "plan") {
+      toast.message("Plan mode is read-only.");
+      return;
+    }
     if (bridge.getSnapshot().status !== "connected") {
       toast.error("Bridge not connected.");
       return;
@@ -389,7 +402,7 @@ export function useTaskExecutor(conversationId: string | null) {
         return;
       }
     }
-  }, [tasks, conversationId, sendTool, takeSnapshot, watchConsole, requestFix, update]);
+  }, [tasks, conversationId, sendTool, takeSnapshot, watchConsole, requestFix, update, mode]);
 
   const cancel = useCallback(async (idx: number) => {
     const t = tasks[idx];
@@ -432,6 +445,10 @@ export function useTaskExecutor(conversationId: string | null) {
   }, [tasks, update]);
 
   const runAll = useCallback(async () => {
+    if (mode === "plan") {
+      toast.message("Plan mode is read-only. Switch to Agent mode to execute.");
+      return;
+    }
     // If tasks are all simple write/exec actions, group into one batch_execute
     if (
       tasks.length > 1 &&
@@ -494,7 +511,7 @@ export function useTaskExecutor(conversationId: string | null) {
       // eslint-disable-next-line no-await-in-loop
       await prepare(i);
     }
-  }, [tasks, prepare, takeSnapshot, conversationId, update]);
+  }, [tasks, prepare, takeSnapshot, conversationId, update, mode]);
 
   return { tasks, setAll, prepare, execute, cancel, undo, runAll, update };
 }
